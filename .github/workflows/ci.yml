@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  RENODE_VERSION: "1.16.1"
+
+jobs:
+  build-and-test:
+    name: Build firmware and run Renode tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain and CMake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi cmake ninja-build
+          arm-none-eabi-gcc --version | head -n 1
+
+      - name: Cache Renode
+        id: cache-renode
+        uses: actions/cache@v4
+        with:
+          path: ~/renode
+          key: renode-portable-${{ env.RENODE_VERSION }}
+
+      - name: Install Renode (portable)
+        if: steps.cache-renode.outputs.cache-hit != 'true'
+        run: |
+          url="https://github.com/renode/renode/releases/download/v${RENODE_VERSION}/renode-${RENODE_VERSION}.linux-portable.tar.gz"
+          mkdir -p ~/renode
+          wget -q -O /tmp/renode.tar.gz "$url"
+          tar -xzf /tmp/renode.tar.gz --strip-components=1 -C ~/renode
+
+      - name: Add Renode to PATH
+        run: |
+          echo "$HOME/renode" >> "$GITHUB_PATH"
+          "$HOME/renode/renode" --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r tests/requirements.txt
+
+      - name: Configure and build firmware
+        run: |
+          cmake -S . -B build -G Ninja
+          cmake --build build
+
+      - name: Run pytest against Renode
+        run: pytest -v --junitxml=test-logs/junit.xml
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            test-logs/
+            build/firmware/**/*.elf
+            build/firmware/**/*.map
+          if-no-files-found: ignore
+
+  docker:
+    name: Reproduce with Dockerfile
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t ota-lab .
+      - name: Run tests inside the image
+        run: docker run --rm ota-lab
