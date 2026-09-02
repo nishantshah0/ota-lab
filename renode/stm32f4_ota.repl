@@ -1,0 +1,20 @@
+// Platform for the OTA lab. Builds on the STM32F4 Discovery board that ships
+// with Renode (platforms/boards/stm32f4_discovery.repl), which in turn pulls in
+// platforms/cpus/stm32f4.repl. That file provides everything phase 1 needs:
+//
+//   cpu        CortexM (cortex-m4) with NVIC
+//   flash      0x08000000, 2 MiB mapped (the linker script limits us to 1 MiB)
+//   sram       0x20000000, 256 KiB mapped (linker uses 128 KiB)
+//   usart2     UART.STM32_UART at 0x40004400, IRQ 38
+//   can1       CAN.STMCAN at 0x40006400, IRQs 19..22 (TX, RX0, RX1, SCE)
+//   timer2     Timers.STM32_Timer at 0x40000000, IRQ 28, 10 MHz model clock
+//   gpioPortD  with the user LED on pin 12 (sysbus.gpioPortD.UserLED)
+//
+// Keeping our own .repl gives later phases a place to add things such as a
+// CCM RAM region or a second flash bank without editing Renode's files.
+using "platforms/boards/stm32f4_discovery.repl"
+
+// Core coupled memory, absent from the stock description. The linker script
+// reserves .noinit here for data shared with the bootloader across resets.
+ccm: Memory.MappedMemory @ sysbus 0x10000000
+    size: 0x10000

@@ -1,0 +1,39 @@
+:name: OTA lab
+:description: Device under test plus a CAN-to-UART gateway on a shared CAN bus.
+
+# Variables. The pytest harness overrides these before including this script;
+# the defaults make "renode renode/ota_lab.resc" from the repository root work
+# for interactive use.
+$dut_bin?=@build/firmware/app/ota_app.elf
+$gw_bin?=@build/firmware/can_gateway/can_gateway.elf
+$dut_uart_port?=3456
+$gw_uart_port?=3457
+
+# One CAN bus shared by both machines. The hub forwards each frame to every
+# attached controller except the sender.
+emulation CreateCANHub "canbus"
+
+# UARTs exposed as raw TCP servers (the trailing false disables telnet
+# negotiation bytes so clients see only the firmware's bytes).
+emulation CreateServerSocketTerminal $dut_uart_port "dut_term" false
+emulation CreateServerSocketTerminal $gw_uart_port "gw_term" false
+
+# Device under test.
+mach create "dut"
+machine LoadPlatformDescription @renode/stm32f4_ota.repl
+sysbus LoadELF $dut_bin
+connector Connect sysbus.usart2 dut_term
+connector Connect sysbus.can1 canbus
+
+# Gateway: the same board with the CAN-to-UART bridge firmware.
+mach create "gateway"
+machine LoadPlatformDescription @renode/stm32f4_ota.repl
+sysbus LoadELF $gw_bin
+connector Connect sysbus.usart2 gw_term
+connector Connect sysbus.can1 canbus
+
+mach set "dut"
+
+# Not started here on purpose: the harness connects its sockets first, then
+# issues "start" so the boot banner is never missed. For interactive use run:
+#   start
