@@ -74,6 +74,18 @@ clock at 3.998 s), so the check allows 50 ms of slack at the whole-second
 boundaries. The uptime values printed by the firmware are still required to
 be exact multiples of 1000 ms.
 
+### 5. Link failed on Ubuntu: `cannot find libc.a`
+
+Symptom: both CI jobs failed at link time with the apt `gcc-arm-none-eabi`
+(GCC 10.3, binutils 2.35) while the same sources linked fine with Arm GNU
+Toolchain 14.2 on the bring-up host.
+
+Cause: the linker script's `/DISCARD/` block listed `libc.a ( * )` and
+`libm.a ( * )`, a pattern copied from vendor scripts. Older ld treats those
+as input files and fails when they do not exist; the Ubuntu package set has
+no newlib installed. Newer ld ignores the missing files. The project links
+with `-nostdlib`, so the entries were dead weight. Fix: removed them.
+
 ## Open items
 
 * Report the DLC 0 crash upstream to Renode with the stack trace from the

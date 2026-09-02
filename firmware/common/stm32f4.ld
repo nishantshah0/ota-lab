@@ -187,8 +187,6 @@ SECTIONS
 
     /DISCARD/ :
     {
-        libc.a ( * )
-        libm.a ( * )
         *(.ARM.attributes)
         *(.comment)
     }
