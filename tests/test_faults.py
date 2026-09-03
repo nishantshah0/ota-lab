@@ -57,16 +57,21 @@ def journal_record_addr(index: int, word: int = 3) -> int:
     return JOURNAL0 + index * 16 + word * 4
 
 
-def run_until_cut(lab, image, *, timeout=90.0, **sender_kw) -> tuple[bytes, ota_send.Sender]:
+def run_until_cut(lab, image, *, timeout=900.0, **sender_kw) -> tuple[bytes, ota_send.Sender]:
     """Run a transfer in a thread until the armed watchpoint halts the core,
-    then dump flash and stop Renode. Returns the dump."""
+    then dump flash and stop Renode. Returns the dump.
+
+    The wall-clock budget is deliberately large: a cut late in the image
+    needs most of a transfer to happen first, and CI runners are several
+    times slower than a desktop. The wait ends early as soon as the sender
+    thread finishes, so a missed watchpoint still fails fast."""
     s = ota_send.Sender(HarnessLineIO(lab.gw_uart), verbose=False, ack_timeout=3.0, **sender_kw)
     outcome = {}
 
     def worker():
         try:
             outcome["result"] = s.transfer(image, otaimg.SLOT_B)
-        except ota_send.TransferError as e:
+        except Exception as e:  # noqa: BLE001  (cancelled, or sockets closed by lab.stop())
             outcome["error"] = e
 
     t = threading.Thread(target=worker, daemon=True)
@@ -211,7 +216,7 @@ def test_power_cut_during_confirm_write(flash, lab_factory):
     lab.monitor.command("start")
     lab.dut_uart.expect(r"^decision: slot=B reason=PENDING_TRIAL attempt=1/3$", BOOT_TIMEOUT)
     lab.dut_uart.expect(r"^boot: ok$", 10.0)
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + 120.0
     while not lab.is_halted():
         assert time.monotonic() < deadline, "confirm write never happened"
         time.sleep(0.2)
@@ -262,7 +267,7 @@ def test_random_power_cut_campaign(flash, lab_factory, seed):
         else:
             ready(lab)
         try:
-            dump, _ = run_until_cut(lab, image, timeout=60.0)
+            dump, _ = run_until_cut(lab, image)
         except AssertionError as e:
             if "finished before the cut" in str(e):
                 # The cut address was already passed by an earlier run (records
@@ -392,8 +397,15 @@ def test_garbage_and_malformed_frames_do_not_break_the_device(flash, lab_factory
         # 1..8 bytes: a DLC 0 frame would hit the Renode 1.16.1 hub crash (phase 1 notes)
         s.send_frame(can_id, bytes(rng.randrange(256) for _ in range(rng.randrange(1, 9))))
     # Drain whatever the device answered (NAK NOT_STARTED and the like).
-    while s.recv_reply(1.0) is not None:
-        pass
+    # A STATUS request is the synchronisation marker: every fuzz reply was
+    # queued before it, so once its answer arrives the line is clean.
+    s.send_frame(ota_send.ID_CTRL, bytes([ota_send.STATUS]))
+    deadline = time.monotonic() + 60.0
+    while True:
+        r = s.recv_reply(5.0)
+        assert r is not None and time.monotonic() < deadline, "no STATUS reply after fuzzing"
+        if r.type == ota_send.STATUS_REPLY:
+            break
 
     # START_B without START_A
     s.send_frame(ota_send.ID_CTRL, bytes([ota_send.START_B, 0, 1]) + b"\x00" * 5)
