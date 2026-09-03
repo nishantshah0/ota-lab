@@ -11,13 +11,17 @@
 #include "stm32f4_regs.h"
 
 #define QUEUE_LEN        64U   /* power of two, frames buffered between ISR and main loop */
-#define INACTIVITY_MS    10000U
+/* Only frees the RAM state of an abandoned transfer; a new START works in
+ * any state. Generous on purpose: the emulator's virtual clock can run
+ * several times faster than the host that feeds it. */
+#define INACTIVITY_MS    300000U
 
 /* ISR -> main loop queue */
 static struct can_frame  queue[QUEUE_LEN];
 static volatile uint32_t q_head, q_tail;
 static volatile uint32_t rx_frames, rx_dropped;
 static uint32_t dbg_last_seq, dbg_dups, dbg_naks, dbg_accepted;
+static volatile bool timed_out;
 
 static struct {
     uint8_t  state;
@@ -199,10 +203,9 @@ static void handle_start_b(const struct can_frame *f)
     struct progress p;
     bool resume = progress_read(&p) && p.state == OTA_STATE_RECEIVING &&
                   p.header_crc == header_crc && p.image_size == ctx.image_size &&
-                  p.slot == slot && p.chunks < ctx.total_chunks;
+                  p.slot == slot && p.chunks <= ctx.total_chunks;
     if (resume) {
         ctx.next_seq = p.chunks;
-        ctx.flags |= p.flags & OTA_START_FLAG_FORCE ? 0U : 0U;
         ctx.state = OTA_STATE_RECEIVING;
         log_line("START resume", OTA_OK, ctx.next_seq);
         reply(OTA_REPLY_ACK, ctx.next_seq, 1, 0);
@@ -399,6 +402,10 @@ static void handle_frame(const struct can_frame *f)
 
 void update_poll(void)
 {
+    if (timed_out) {
+        timed_out = false;
+        log_line("inactivity timeout, back to idle", OTA_ERR_TIMEOUT, ctx.next_seq);
+    }
     while (q_tail != q_head) {
         struct can_frame f = queue[q_tail & (QUEUE_LEN - 1U)];
         q_tail++;
@@ -417,6 +424,7 @@ void update_tick_10ms(void)
             ctx.state = OTA_STATE_IDLE;
             ctx.fill = 0;
             ctx.idle_ms = 0;
+            timed_out = true;
         }
     }
 }
