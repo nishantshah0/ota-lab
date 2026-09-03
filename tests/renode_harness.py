@@ -190,7 +190,8 @@ class Monitor:
 
 @dataclass
 class RenodeLab:
-    dut_elf: Path
+    boot_elf: Path
+    flash_image: Path
     gateway_elf: Path
     log_dir: Path
     renode: str = field(default_factory=lambda: os.environ.get("RENODE", "renode"))
@@ -216,7 +217,8 @@ class RenodeLab:
         self.script.write_text(
             "\n".join(
                 [
-                    f"$dut_bin=@{self.dut_elf.resolve().as_posix()}",
+                    f"$boot_elf=@{self.boot_elf.resolve().as_posix()}",
+                    f"$flash_bin=@{self.flash_image.resolve().as_posix()}",
                     f"$gw_bin=@{self.gateway_elf.resolve().as_posix()}",
                     f"$dut_uart_port={self.dut_uart_port}",
                     f"$gw_uart_port={self.gw_uart_port}",
@@ -227,7 +229,10 @@ class RenodeLab:
             )
         )
 
-    def start(self) -> "RenodeLab":
+    def start(self, autostart: bool = True) -> "RenodeLab":
+        """Launch Renode, attach to it and (unless autostart is False) start
+        the emulation. With autostart=False the caller can install hooks or
+        watchpoints from the monitor first and then call monitor.command("start")."""
         exe = shutil.which(self.renode) or self.renode
         self._write_script()
         cmd = [exe, "--disable-gui", "-P", str(self.monitor_port), self.script.as_posix()]
@@ -248,7 +253,8 @@ class RenodeLab:
             self.gw_uart = LineReader(wait_for_port(self.gw_uart_port, self.startup_timeout), "gw-uart", self.check_alive)
             self._wait_for_script()
             self.started_at = time.monotonic()
-            self.monitor.command("start")
+            if autostart:
+                self.monitor.command("start")
         except Exception:
             self.stop()
             raise
@@ -294,6 +300,45 @@ class RenodeLab:
             raise RuntimeError(f"could not parse virtual time from: {out!r}")
         h, mi, s, frac = m.groups()
         return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+
+    def dump_flash(self, path: Path, addr: int = 0x08000000, size: int = 0x80000) -> bytes:
+        """Copy a flash region out of the running emulation into a file."""
+        script = (
+            f"data = self.Machine['sysbus'].ReadBytes({addr}, {size}); "
+            f"f = open(r'{path.resolve()}', 'wb'); f.write(bytearray(data)); f.close()"
+        )
+        out = self.monitor.command(f'python "{script}"', timeout=60.0)
+        if "error" in out.lower():
+            raise RuntimeError(f"flash dump failed: {out.strip()}")
+        return path.read_bytes()
+
+    def send_command(self, text: str) -> None:
+        """Send one console command line to the device under test."""
+        self.dut_uart.write(text.encode() + b"\r")
+
+    def read_bootlog(self, timeout: float = 10.0) -> list[dict]:
+        """Issue 'log' and parse the LOG lines that come back."""
+        self.send_command("log")
+        entries: list[dict] = []
+        deadline = time.monotonic() + timeout
+        while True:
+            line = self.dut_uart.readline(max(0.1, deadline - time.monotonic()))
+            if line.text.startswith("LOG END"):
+                return entries
+            if line.text.startswith("LOG idx="):
+                fields = dict(kv.split("=", 1) for kv in line.text[4:].split())
+                for k in ("idx", "seq", "jseq", "attempts"):
+                    if k in fields:
+                        fields[k] = int(fields[k])
+                entries.append(fields)
+
+    def read_state(self, timeout: float = 10.0) -> dict:
+        self.send_command("state")
+        m, _ = self.dut_uart.expect(r"^STATE (.*)$", timeout)
+        fields = dict(kv.split("=", 1) for kv in m.group(1).split())
+        for k in ("seq", "attempts", "confirmed", "bank0", "bank1"):
+            fields[k] = int(fields[k])
+        return fields
 
     def led_state(self) -> bool:
         self.monitor.command('mach set "dut"')
