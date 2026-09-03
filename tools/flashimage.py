@@ -1,7 +1,7 @@
 """
 Assemble a complete flash image for the emulator from its parts.
 
-The image covers the first 512 KiB of flash (sectors 0..7), starts out fully
+The image covers the first 640 KiB of flash (sectors 0..8), starts out fully
 erased (0xFF) and takes regions by address. Renode loads it in one go with
 'sysbus LoadBinary', which stands in for a flash programmer.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 FLASH_BASE = 0x08000000
-IMAGE_SIZE = 0x80000  # sectors 0..7
+IMAGE_SIZE = 0xA0000  # sectors 0..8
 
 BOOT_ADDR = 0x08000000
 JOURNAL_BANK0 = 0x08008000
@@ -22,6 +22,8 @@ SLOT_B = 0x08040000
 SLOT_SIZE = 0x20000
 BOOTLOG_ADDR = 0x08060000
 BOOTLOG_SIZE = 0x20000
+PROGRESS_ADDR = 0x08080000
+PROGRESS_SIZE = 0x20000
 
 
 class FlashImage:
