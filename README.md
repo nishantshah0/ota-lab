@@ -14,8 +14,9 @@ builds the firmware and runs the suite in GitHub Actions and in Docker.
 
 The end goal is a device that receives a signed firmware image over CAN,
 verifies it, installs it into the inactive slot, and rolls back on its own
-if the new image fails to prove itself. Phases 1 and 2 are done; the CAN
-transport is next.
+if the new image fails to prove itself. Phases 1 to 3 are done: the device
+can now be updated end to end over CAN from a host tool; fault injection
+is next.
 
 ## Status
 
@@ -23,7 +24,7 @@ transport is next.
 |-------|-------|-------|
 | 1 | Bare-metal skeleton, Renode lab, UART and CAN plumbing, test harness, CI | Done |
 | 2 | A/B bootloader, Ed25519 signed images, journaled boot state with rollback, watchdog, safe mode, boot log | Done |
-| 3 | Chunked firmware transfer over CAN into the inactive slot | Next |
+| 3 | Chunked firmware delivery over CAN into the inactive slot, resume after reset, anti-rollback | Done |
 | 4 | Fault injection: power cut mid-write, corrupted chunks, bad signatures | Planned |
 | 5 | Fleet view across many emulated devices | Planned |
 
@@ -38,16 +39,23 @@ two seconds or the watchdog brings the chip back, and after three
 unconfirmed attempts the bootloader rolls back to the previous image. If
 neither slot is valid a small safe-mode image takes over.
 
+The application receives new images over CAN: `tools/ota_send.py` streams
+a signed image in 6 byte chunks with a 32 chunk window, NAK and
+retransmit, the device writes it into the inactive slot, keeps a progress
+record in flash so a reset mid-transfer resumes from the last window,
+validates CRC and signature on FINISH, refuses versions lower than the
+running one unless forced, and only then marks the slot pending.
+
 ```
-BOOT v0.2.0 (phase 2)
+BOOT v0.3.0 (phase 3)
 cause: RESET_WHILE_RUNNING slot=B
 journal: seq=7 active=A pending=B attempts=2 confirmed=0
-slot A: OK v0.2.0
-slot B: OK v0.2.0
+slot A: OK v0.3.0
+slot B: OK v0.3.0
 decision: slot=B reason=PENDING_TRIAL attempt=3/3
 jump: sp=0x20020000 pc=0x080405E1
 
-=== OTA-LAB app v0.2.0 (phase 2) ===
+=== OTA-LAB app v0.3.0 (phase 3) ===
 slot: B (pending, trial boot)
 variant: noconfirm
 ...
@@ -55,7 +63,7 @@ variant: noconfirm
 
 The application itself blinks the LED from a timer interrupt, prints a
 heartbeat once per second, echoes every CAN frame with the ID incremented,
-and serves a console (`state`, `log`, `version`, `confirm`) so the host can
+and serves a console (`state`, `log`, `version`, `confirm`, `update`, `reboot`) so the host can
 read the device's boot history. It is register-level C with its own startup
 file and linker script: no HAL, no libc. Monocypher (vendored) provides
 Ed25519 and SHA-512 in the bootloader.
@@ -123,16 +131,28 @@ the device, `log` prints the boot history and `state` the journal. On the
 gateway, `t1232AABB` followed by Enter sends CAN ID 0x123 with two bytes;
 the device answers `t1242AABB`.
 
+### Sending an update
+
+With the interactive session running:
+
+```bash
+python tools/ota_send.py --port 3457 --image build/firmware/app/app_good_B.signed.bin
+```
+
+then `reboot` on the device console; the bootloader runs the new image as a
+trial and it confirms itself.
+
 ### Signing your own image
 
 ```bash
-python tools/sign_image.py --key keys/dev_ed25519.key --slot B --version 0.2.1 \
+python tools/sign_image.py --key keys/dev_ed25519.key --slot B --version 0.3.1 \
     --in build/firmware/app/app_good_B.bin --out my_image_B.bin
 ```
 
-`keys/dev_ed25519.key` is a development key committed so a clean clone
-works; `tools/keygen.py` makes a new pair and regenerates the public key
-compiled into the bootloader.
+`keys/dev_ed25519.key` is a throwaway test key, committed on purpose so a
+clean clone builds and the tests run. It protects nothing. For anything
+real, generate a new pair with `tools/keygen.py`, keep the private half
+off the repository, and rebuild the bootloader with the new public key.
 
 ## Repository layout
 
@@ -143,7 +163,7 @@ firmware/boot/        A/B bootloader
 firmware/safe/        safe-mode image
 firmware/app/         application, three variants x two slots
 firmware/can_gateway/ CAN to UART bridge used by the tests
-tools/                keygen, signer, flash image builder, journal codec
+tools/                keygen, signer, flash image builder, journal codec, CAN update sender
 keys/                 development signing key (test only)
 renode/               platform description and lab script
 tests/                pytest suite and the Renode harness
@@ -171,10 +191,19 @@ docs/                 architecture, memory map, phase notes
 | `test_journal_prefers_highest_seq_across_banks` | bank selection by sequence number |
 | `test_journal_switches_bank_when_full` | 1024 records, then the other bank is erased and used |
 | `test_power_cut_during_journal_write_recovers_last_record` | core halted mid-record by a watchpoint, flash dumped, Renode killed and restarted from the dump |
+| `test_full_transfer_into_b_then_boots_b_and_confirms` | image streamed over CAN into B, reboot, trial boot, confirm; throughput recorded |
+| `test_transfer_survives_random_frame_loss` | 5% of frames dropped, recovered by NAK and retransmit |
+| `test_reset_mid_transfer_resumes_from_last_good_chunk` | reboot after 320 chunks, transfer resumes at 320 |
+| `test_corrupted_chunk_is_caught_on_finish` | flipped bit caught by the CRC, slot not marked pending |
+| `test_bad_signature_is_rejected_on_finish` | bad signature refused |
+| `test_lower_version_is_rejected_unless_forced` | anti-rollback, with force override |
+| `test_forged_version_in_start_does_not_bypass_anti_rollback` | the signed header is the authority |
+| `test_cannot_target_the_running_slot` | SLOT_BUSY |
+| `test_never_confirming_update_rolls_back_to_a` | transfer, reboot, three trials, rollback, end to end |
 
 Timing assertions use the emulator's virtual clock rather than the host
 clock. Three consecutive local runs and both CI jobs report the same
-24 passed, 1 skipped.
+33 passed, 1 skipped.
 
 ## Flash layout (short version)
 
@@ -186,6 +215,7 @@ clock. Three consecutive local runs and both CI jobs report the same
 | 5 | 0x08020000 | 128K | slot A |
 | 6 | 0x08040000 | 128K | slot B |
 | 7 | 0x08060000 | 128K | boot event log |
+| 8 | 0x08080000 | 128K | update progress records |
 
 Images link at slot base + 512, after the signed header. The full story,
 including the jump sequence and why the journal survives a power cut at any
@@ -206,8 +236,13 @@ point, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 * The stock STM32F4 platform file references an SVD that Renode downloads
   on first use, so the first run needs network access.
 
-More in [docs/PHASE1_NOTES.md](docs/PHASE1_NOTES.md) and
-[docs/PHASE2_NOTES.md](docs/PHASE2_NOTES.md).
+* Renode's CAN hub has no bus timing, so the gateway paces its frames to
+  the 250 microsecond bus time of a 500 kbit/s frame; without that the
+  DUT's three-deep receive FIFO overflows on every burst.
+
+More in [docs/PHASE1_NOTES.md](docs/PHASE1_NOTES.md),
+[docs/PHASE2_NOTES.md](docs/PHASE2_NOTES.md) and
+[docs/PHASE3_NOTES.md](docs/PHASE3_NOTES.md).
 
 ## License
 

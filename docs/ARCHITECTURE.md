@@ -3,21 +3,22 @@
 Secure OTA firmware update lab for STM32F4, emulated in Renode, tested with pytest.
 This document is updated at the end of every phase.
 
-Current phase: **2, A/B bootloader** (built, run and tested; bring-up logs in
-[PHASE1_NOTES.md](PHASE1_NOTES.md) and [PHASE2_NOTES.md](PHASE2_NOTES.md)).
+Current phase: **3, firmware delivery over CAN** (built, run and tested;
+bring-up logs in [PHASE1_NOTES.md](PHASE1_NOTES.md), [PHASE2_NOTES.md](PHASE2_NOTES.md)
+and [PHASE3_NOTES.md](PHASE3_NOTES.md)).
 
 ## Repository layout
 
 ```
 CMakeLists.txt              top-level build: add_firmware(), add_signed_image()
 cmake/arm-none-eabi.cmake   cross toolchain file
-firmware/common/            startup, linker script, drivers, journal, boot log, image header
+firmware/common/            startup, linker script, drivers, journal, boot log, image header, update task
 firmware/common/monocypher/ vendored Monocypher 4.0.2 (Ed25519 + SHA-512)
 firmware/boot/              A/B bootloader, sectors 0..1, public key compiled in
 firmware/safe/              safe-mode image, sector 4
 firmware/app/               application, linked for slot A and B in three variants
 firmware/can_gateway/       test helper firmware: CAN <-> UART bridge
-tools/                      keygen.py, sign_image.py, mkflash.py and their libraries
+tools/                      keygen.py, sign_image.py, mkflash.py, ota_send.py and their libraries
 keys/                       development Ed25519 key pair (test only)
 renode/                     platform description and lab script
 tests/                      pytest suite and Renode harness
@@ -70,7 +71,8 @@ which drives the layout:
 | 5      | 0x08020000 | 128K  | slot A: 512 byte signed header + image |
 | 6      | 0x08040000 | 128K  | slot B: 512 byte signed header + image |
 | 7      | 0x08060000 | 128K  | boot event log ring (4096 entries) |
-| 8..11  | 0x08080000 | 512K  | unused |
+| 8      | 0x08080000 | 128K  | update progress records (4096 entries) |
+| 9..11  | 0x080A0000 | 384K  | unused |
 
 Why this shape:
 
@@ -97,9 +99,9 @@ Measured sizes (`-O2` for images, `-Os` for the bootloader and Monocypher):
 
 | Image | .text | .bss | notes |
 |-------|------:|-----:|-------|
-| boot.elf | 15096 B | 2320 B | Ed25519 field arithmetic and SHA-512 are 70% of it |
-| safe.elf | 4672 B | 2376 B | |
-| app_good_A.elf | 5800 B | 2400 B | plus 512 B header once signed |
+| boot.elf | 15124 B | 2320 B | Ed25519 field arithmetic and SHA-512 are 70% of it |
+| safe.elf | 5648 B | 2608 B | |
+| app_good_A.elf | 20436 B | 3656 B | plus 512 B header once signed; links Monocypher for FINISH validation |
 
 ## Signed image format
 
@@ -340,12 +342,139 @@ jseq=.. slot=.. reason=.. attempts=.. cause=.. a=.. b=.. ver=..` line per
 entry and ends with `LOG END n=<count>`. `state` prints the journal state,
 `version` the running image's header, `confirm` forces a confirm.
 
+## Firmware delivery over CAN
+
+### Why not ISO-TP
+
+ISO 15765-2 carries at most 4095 bytes per message, numbers consecutive
+frames with a 4 bit counter, and has no per-block acknowledgement from
+the receiver beyond flow control. A firmware image is 20 to 128 KiB, must
+survive lost frames without restarting, and must resume after a reset.
+The protocol below is purpose built: 16 bit sequence numbers, explicit
+ACK per window, NAK on the first gap, and a START that names the image so
+the device can recognise a partial one.
+
+### Frames
+
+Three 11-bit identifiers. All multi-byte fields are little endian.
+
+```
+host -> device, control, ID 0x710
+  START_A   | 01 | size u32 (header + body)        | maj | min | pat |
+  START_B   | 02 | flags | slot | header crc32           | ff |
+  FINISH    | 03 |
+  ABORT     | 04 |
+  STATUS    | 05 |
+
+host -> device, data, ID 0x711
+  DATA      | seq lo | seq hi | up to 6 payload bytes             |
+
+device -> host, ID 0x712
+  ACK       | 20 | next seq lo | hi | code | .. |      code after START: 0 fresh, 1 resumed
+  NAK       | 21 | next seq lo | hi | code | .. |      code 1 = gap; after START: rejection
+  VERDICT   | 23 | code | detail u32                 | .. |
+  STATUS    | 24 | state | slot | next seq u16 | total u16 | ff |
+```
+
+`flags` bit 0 is `force` (allow a lower version). `header crc32` is the
+CRC-32 of the image's 512 byte header and identifies the transfer.
+
+### Transfer
+
+```
+host                                   device
+  START_A, START_B  ----------------->  reject? NAK(code)
+                                        match unfinished progress record?
+                    <-----------------  ACK(next = resume point, code 1)
+                                        else erase slot, write progress(0)
+                    <-----------------  ACK(next = 0, code 0)
+  DATA next .. boundary-1  ---------->  collect in RAM window (32 chunks)
+                                        on window full or last chunk:
+                                          program window into slot
+                                          append progress record (chunks)
+                    <-----------------  ACK(next)
+  DATA ... (repeat)
+  FINISH  --------------------------->  all chunks in flash?
+                                        image_validate(slot): header, CRC,
+                                          signature, vectors
+                                        version >= running or force?
+                                        journal: pending = slot
+                    <-----------------  VERDICT(code, detail)
+```
+
+Chunks are 6 bytes, so the sequence number space of 65536 covers 384 KiB,
+three times a slot. The device acknowledges only at multiples of 32
+chunks and at the last chunk, so after a NAK the host sends from the
+requested sequence up to the next boundary. Out-of-order chunks are
+dropped and answered with one NAK per gap (rate limited on the expected
+number); chunks below the expected number are duplicates and ignored.
+A stalled host (no ACK within its timeout) resends the current window;
+it gives up after ten consecutive timeouts without progress.
+
+### Resume after reset
+
+The device programs a window into flash and then writes a progress
+record (sector 8, 32 bytes, CRC last, append-only like the journal):
+image header CRC, image size, target slot, state, chunks in flash. Because
+the record is written after the data it describes, a reset at any moment
+leaves a record that is at worst behind the flash content, never ahead of
+it. On the next START the device compares header CRC, size and slot with
+the last record; if they match and the record says RECEIVING, it answers
+ACK with the recorded chunk count and the host continues from there.
+Chunks that were in the RAM window at the time of the reset (up to 31) are
+sent again, and words already programmed with the same value are accepted
+by the flash driver because programming can only clear bits and the bits
+are already right. A START that does not match erases the slot and starts
+over; FINISH writes a DONE record; ABORT writes ABORTED.
+
+Sector 8 holds 4096 records; one record per 192 byte window means a full
+128 KiB image writes about 680 records, so the sector is erased roughly
+every six full-size updates.
+
+### Anti-rollback
+
+Two checks. START_A carries the version the host claims; the device
+rejects it early with `VERSION_LOW` if it is lower than the running
+image's header version, unless `force` is set. That check only saves bus
+time. The one that matters runs at FINISH on the signed header now sitting
+in flash: after `image_validate()` has verified the signature, the header's
+version is compared with the running image's, and a lower version is
+rejected unless the START carried `force`. A host that lies in START
+therefore gets through the transfer and is refused at the end
+(`test_forged_version_in_start_does_not_bypass_anti_rollback`). Equal
+versions are allowed so an image can be re-installed. The running image's
+version comes from its own header at slot base, which the bootloader
+verified before jumping.
+
+### Host tool
+
+`tools/ota_send.py` speaks the SLCAN text protocol of the gateway and
+implements the sender: window of 32, rewind on NAK, resend on timeout,
+progress output, and the device's verdict as the exit status. Flags
+`--drop-rate`, `--corrupt-chunk` and `--stop-after` exist for the tests.
+The `Sender` class is importable and pytest drives it over the harness's
+own gateway socket.
+
+### Throughput
+
+Measured in Renode with no loss: about 7.2 KB per virtual second for a
+21 KB image (3500 chunks). The gateway paces CAN frames to the real bus
+time of a 500 kbit/s classic CAN frame (250 microseconds); the remaining
+cost is the host to gateway UART link carrying 22 characters of SLCAN
+text per 6 byte chunk. The device programs one 192 byte window per ACK,
+so flash is not the limit. With 5% simulated frame loss the same image
+needs about 1.9 times the frames.
+
 ## Application and safe mode
 
 `firmware/app`: phase 1 behaviour (LED, heartbeat, CAN echo) plus the
-watchdog kick, the confirm after the first heartbeat, and the console.
-Three build variants, each linked for both slots: `good`, `noconfirm`
-(never confirms) and `hang` (spins with interrupts off after its banner).
+watchdog kick, the confirm after the first heartbeat, the console, and
+the update task. CAN frames on the update identifiers are queued from the
+CAN interrupt and handled in the main loop, where flash is written; every
+other frame is still echoed with ID + 1. Console commands: `state`, `log`,
+`version`, `confirm`, `update` (transfer status) and `reboot`. Three build
+variants, each linked for both slots: `good`, `noconfirm` (never confirms)
+and `hang` (spins with interrupts off after its banner).
 
 `firmware/safe`: banner, 5 Hz LED, watchdog kick, console, "waiting for
 update" every five seconds. Phase 3 puts the update receiver here.
@@ -404,6 +533,15 @@ Tests:
 | `test_journal_prefers_highest_seq_across_banks` | bank 1 seq 9 beats bank 0 seq 7 |
 | `test_journal_switches_bank_when_full` | 1024 records in bank 0, next write erases and uses bank 1 |
 | `test_power_cut_during_journal_write_recovers_last_record` | watchpoint halt mid-record, dump, restart, torn record ignored |
+| `test_full_transfer_into_b_then_boots_b_and_confirms` | image streamed into B, pending written, reboot, trial boot, confirm; throughput recorded |
+| `test_transfer_survives_random_frame_loss` | 5% of DATA frames dropped by the host, recovered via NAK and retransmit |
+| `test_reset_mid_transfer_resumes_from_last_good_chunk` | stop at 320 chunks, reboot, next START resumes at 320 |
+| `test_corrupted_chunk_is_caught_on_finish` | one flipped bit, FINISH says BAD_CRC, slot not pending |
+| `test_bad_signature_is_rejected_on_finish` | BAD_SIGNATURE, slot not pending |
+| `test_lower_version_is_rejected_unless_forced` | VERSION_LOW at START, accepted with force |
+| `test_forged_version_in_start_does_not_bypass_anti_rollback` | START claims 9.9.9, signed header says 0.1.0, refused at FINISH |
+| `test_cannot_target_the_running_slot` | SLOT_BUSY |
+| `test_never_confirming_update_rolls_back_to_a` | end to end: transfer, reboot, three trials, rollback |
 
 ## CI and reproducibility
 
@@ -444,6 +582,6 @@ docker build -t ota-lab . && docker run --rm ota-lab
 |-------|------|
 | 1 | foundation: skeleton, Renode lab, UART/CAN plumbing, harness, CI |
 | 2 | A/B bootloader, signed header, journal with rollback, watchdog, safe mode, boot log |
-| 3 | chunked firmware transfer over CAN into the inactive slot, flash driver reuse |
+| 3 | chunked firmware transfer over CAN into the inactive slot with resume and anti-rollback |
 | 4 | fault injection (power cut mid-write, corrupted chunks, bad signatures) |
 | 5 | fleet dashboard over many Renode instances |
