@@ -1,8 +1,8 @@
 /*
  * A/B bootloader, sectors 0..1.
  *
- * Reset -> read journal -> decide candidate slots -> validate (magic, header,
- * size, slot, CRC, Ed25519 signature, vectors) -> record decision in the
+ * Reset -> read journal -> decide candidate slots -> validate (image_validate:
+ * magic, header, size, slot, CRC, Ed25519 signature, vectors) -> record decision in the
  * boot log -> leave a marker in CCM -> start the watchdog -> jump.
  *
  * Decision rules (see docs/ARCHITECTURE.md for the flowchart):
@@ -25,14 +25,11 @@
 #include "iwdg.h"
 #include "uart.h"
 #include "fmt.h"
-#include "monocypher-ed25519.h"
 
 #define MAX_ATTEMPTS      3U
 #define WATCHDOG_MS       1000U
 #define SRAM_BASE         0x20000000U
 #define SRAM_END          0x20020000U
-
-extern const uint8_t boot_public_key[32];
 
 static const char *slot_name(uint8_t slot)
 {
@@ -47,56 +44,6 @@ static void put_version(const struct image_header *h)
     fmt_put_udec(h->ver_minor);
     uart_putc('.');
     fmt_put_udec(h->ver_patch);
-}
-
-static void memcpy32(uint8_t *dst, const uint8_t *src)
-{
-    for (unsigned i = 0; i < 32U; i++) {
-        dst[i] = src[i];
-    }
-}
-
-static enum image_result validate_slot(uint8_t slot)
-{
-    const uint32_t base = slot_base(slot);
-    const struct image_header *h = (const struct image_header *)base;
-
-    if (h->magic != IMAGE_MAGIC) {
-        return IMAGE_ERR_MAGIC;
-    }
-    if (h->header_version != IMAGE_HEADER_VERSION || h->header_size != IMAGE_HEADER_SIZE) {
-        return IMAGE_ERR_VERSION;
-    }
-    if (h->image_size == 0U || h->image_size > SLOT_SIZE - IMAGE_HEADER_SIZE || (h->image_size & 3U) != 0U) {
-        return IMAGE_ERR_SIZE;
-    }
-    if (h->target_slot != slot || h->load_address != base + IMAGE_HEADER_SIZE) {
-        return IMAGE_ERR_SLOT;
-    }
-
-    const uint8_t *body = (const uint8_t *)(base + IMAGE_HEADER_SIZE);
-    if (crc32(body, h->image_size) != h->body_crc32) {
-        return IMAGE_ERR_CRC;
-    }
-
-    /* Signed message: first 32 header bytes, then SHA-512 of the body. */
-    uint8_t msg[IMAGE_SIGNED_PREFIX + 64U];
-    memcpy32(msg, (const uint8_t *)h);
-    crypto_sha512(msg + IMAGE_SIGNED_PREFIX, body, h->image_size);
-    if (crypto_ed25519_check(h->signature, boot_public_key, msg, sizeof msg) != 0) {
-        return IMAGE_ERR_SIGNATURE;
-    }
-
-    const uint32_t *vectors = (const uint32_t *)body;
-    uint32_t sp = vectors[0];
-    uint32_t pc = vectors[1];
-    if (sp < SRAM_BASE || sp > SRAM_END || (sp & 3U) != 0U) {
-        return IMAGE_ERR_VECTORS;
-    }
-    if ((pc & 1U) == 0U || pc < h->load_address || pc >= h->load_address + h->image_size) {
-        return IMAGE_ERR_VECTORS;
-    }
-    return IMAGE_OK;
 }
 
 static void print_slot_result(uint8_t slot, enum image_result r)
@@ -177,7 +124,7 @@ static uint32_t version_of(uint8_t slot, enum image_result r)
 int main(void)
 {
     uart_init(115200, false);
-    uart_puts("\r\nBOOT v" FW_VERSION " (phase 2)\r\n");
+    uart_puts("\r\nBOOT v" FW_VERSION " (phase 3)\r\n");
 
     /* Reset cause from the CCM marker left by the previous run. */
     uint8_t cause = BOOT_CAUSE_POWER_ON;
@@ -201,8 +148,8 @@ int main(void)
     print_state(&state);
 
     enum image_result result[2];
-    result[SLOT_A] = validate_slot(SLOT_A);
-    result[SLOT_B] = validate_slot(SLOT_B);
+    result[SLOT_A] = image_validate(SLOT_A);
+    result[SLOT_B] = image_validate(SLOT_B);
     print_slot_result(SLOT_A, result[SLOT_A]);
     print_slot_result(SLOT_B, result[SLOT_B]);
 

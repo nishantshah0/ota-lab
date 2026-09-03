@@ -8,7 +8,7 @@ Writes:
   <c-out>            C source with the public key for the bootloader
 
 Usage:
-  python tools/keygen.py --dir keys --name dev_ed25519 --c-out firmware/boot/public_key.c
+  python tools/keygen.py --dir keys --name dev_ed25519 --c-out firmware/common/public_key.c
 """
 import argparse
 from pathlib import Path
@@ -20,7 +20,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dir", default="keys")
     ap.add_argument("--name", default="dev_ed25519")
-    ap.add_argument("--c-out", default="firmware/boot/public_key.c")
+    ap.add_argument("--c-out", default="firmware/common/public_key.c")
     ap.add_argument("--force", action="store_true", help="overwrite an existing key")
     args = ap.parse_args()
 

@@ -23,7 +23,7 @@
  *   24     4    load_address   slot base + 512, where the body must sit
  *   28     4    reserved1      0
  *   32     64   signature      Ed25519 over bytes [0, 32) of the header
- *                              followed by the body
+ *                              followed by SHA-512 of the body
  *   96     416  padding        0xFF
  *
  * The signature covers everything that influences the boot decision:
@@ -72,8 +72,18 @@ static inline uint32_t image_version_packed(const struct image_header *h)
 
 const char *image_result_str(enum image_result r);
 
+/*
+ * Full validation of the image in a slot against the public key compiled
+ * into boot_public_key[]: header fields, size, slot, CRC, Ed25519
+ * signature, vectors. Used by the bootloader before jumping and by the
+ * updater before marking a slot pending, so both agree by construction.
+ */
+enum image_result image_validate(uint8_t slot);
+
 /* Header of the image the caller is running from (link origin - 512). */
 const struct image_header *image_self_header(void);
 uint8_t image_self_slot(void);
+
+extern const uint8_t boot_public_key[32];
 
 #endif

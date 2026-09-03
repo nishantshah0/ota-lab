@@ -7,7 +7,7 @@ endif()
 
 project(ota_lab C ASM)
 
-set(FW_VERSION "0.2.0")
+set(FW_VERSION "0.3.0")
 
 # Timer clock seen by TIM2. Renode models STM32 timers at a fixed 10 MHz
 # (see platforms/cpus/stm32f4.repl). On real silicon with HSI and no APB
@@ -43,9 +43,17 @@ add_link_options(
     -T${LINKER_SCRIPT}
 )
 
+# Monocypher 4.0.2, vendored. Only the Ed25519 (SHA-512) path is linked in;
+# --gc-sections drops the rest.
+add_library(monocypher STATIC
+    ${COMMON_DIR}/monocypher/monocypher.c
+    ${COMMON_DIR}/monocypher/monocypher-ed25519.c
+)
+target_include_directories(monocypher PUBLIC ${COMMON_DIR}/monocypher)
+target_compile_options(monocypher PRIVATE -Os)
+
 add_library(common STATIC
     ${COMMON_DIR}/startup.c
-    ${COMMON_DIR}/libc_min.c
     ${COMMON_DIR}/rcc.c
     ${COMMON_DIR}/gpio.c
     ${COMMON_DIR}/uart.c
@@ -60,24 +68,26 @@ add_library(common STATIC
     ${COMMON_DIR}/iwdg.c
     ${COMMON_DIR}/ota.c
     ${COMMON_DIR}/console.c
+    ${COMMON_DIR}/progress.c
+    ${COMMON_DIR}/update.c
+    ${COMMON_DIR}/sysreset.c
+    ${COMMON_DIR}/public_key.c
 )
 target_include_directories(common PUBLIC ${COMMON_DIR})
+target_link_libraries(common PUBLIC monocypher)
 
-# Monocypher 4.0.2, vendored. Only the Ed25519 (SHA-512) path is linked in;
-# --gc-sections drops the rest.
-add_library(monocypher STATIC
-    ${COMMON_DIR}/monocypher/monocypher.c
-    ${COMMON_DIR}/monocypher/monocypher-ed25519.c
-)
-target_include_directories(monocypher PUBLIC ${COMMON_DIR}/monocypher)
-target_compile_options(monocypher PRIVATE -Os)
+# The handful of libc symbols GCC may emit calls to (memset, memcpy) in
+# freestanding code. Kept in its own archive and linked last so that every
+# earlier archive, Monocypher included, can resolve against it.
+add_library(libcmin STATIC ${COMMON_DIR}/libc_min.c)
+
 
 # add_firmware(<name> <flash origin> <flash length> <sources...>)
 # Links an ELF at the given flash window, produces .bin and .map next to it
 # and prints the section sizes.
 function(add_firmware name origin length)
     add_executable(${name}.elf ${ARGN})
-    target_link_libraries(${name}.elf PRIVATE common gcc)
+    target_link_libraries(${name}.elf PRIVATE common monocypher libcmin gcc)
     target_link_options(${name}.elf PRIVATE
         -Wl,--defsym=__flash_origin=${origin}
         -Wl,--defsym=__flash_length=${length}
