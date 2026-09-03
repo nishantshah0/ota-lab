@@ -61,7 +61,7 @@ class FlashBuilder:
     'garbage' or 'empty'.
     """
 
-    VERSION = (0, 2, 0)
+    VERSION = (0, 3, 0)
 
     def __init__(self, art: Artifacts):
         self.art = art
@@ -70,7 +70,8 @@ class FlashBuilder:
         self.img.place_file(flashimage.BOOT_ADDR, art.boot_bin)
         self.img.place_file(flashimage.SAFE_ADDR, art.safe_bin)
 
-    def _image(self, slot: str, variant: str, kind: str) -> bytes:
+    def image(self, slot: str, variant: str = "good", kind: str = "good", version=None) -> bytes:
+        """A complete signed image (header + body) for a slot, as a file would hold it."""
         body = self.art.app_body(variant, slot)
         flags = {
             "good": {},
@@ -79,16 +80,16 @@ class FlashBuilder:
             "wrong_slot": {"wrong_slot": True},
             "corrupt_body": {"corrupt_body": True},
         }[kind]
-        return otaimg.build_image(body, self.VERSION, otaimg.slot_index(slot), self.key, **flags)
+        return otaimg.build_image(body, version or self.VERSION, otaimg.slot_index(slot), self.key, **flags)
 
-    def slot(self, slot: str, variant: str = "good", kind: str = "good") -> "FlashBuilder":
+    def slot(self, slot: str, variant: str = "good", kind: str = "good", version=None) -> "FlashBuilder":
         addr = flashimage.SLOT_A if slot == "A" else flashimage.SLOT_B
         if kind == "empty":
             self.img.erase(addr, flashimage.SLOT_SIZE)
         elif kind == "garbage":
             self.img.place(addr, bytes((i * 7 + 3) & 0xFF for i in range(4096)))
         else:
-            self.img.place(addr, self._image(slot, variant, kind))
+            self.img.place(addr, self.image(slot, variant, kind, version))
         return self
 
     def journal(self, *records: bytes, bank: int = 0) -> "FlashBuilder":

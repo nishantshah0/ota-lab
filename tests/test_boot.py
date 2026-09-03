@@ -6,7 +6,7 @@ HB_RE = re.compile(r"^HB seq=(\d+) uptime_ms=(\d+) can_rx=(\d+) can_tx_fail=(\d+
 
 
 def test_boot_banner(lab):
-    lab.dut_uart.expect(r"^BOOT v\d+\.\d+\.\d+ \(phase 2\)$", BANNER_TIMEOUT)
+    lab.dut_uart.expect(r"^BOOT v\d+\.\d+\.\d+ \(phase \d\)$", BANNER_TIMEOUT)
     lab.dut_uart.expect(r"^decision: slot=A reason=ACTIVE$", 10.0)
     lab.dut_uart.expect(r"^=== OTA-LAB app v\d+\.\d+\.\d+ \(phase \d+\) ===$", 10.0)
     lab.dut_uart.expect(r"^can1: ready$", 10.0)

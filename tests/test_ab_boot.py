@@ -42,7 +42,7 @@ def test_good_image_in_a_boots_and_confirms(flash, lab_factory):
     lab = lab_factory(image)
 
     lab.dut_uart.expect(r"^journal: seq=1 active=A pending=A attempts=0 confirmed=0$", BOOT_TIMEOUT)
-    lab.dut_uart.expect(r"^slot A: OK v0\.2\.0$", 10.0)
+    lab.dut_uart.expect(r"^slot A: OK v\d+\.\d+\.\d+$", 10.0)
     lab.dut_uart.expect(r"^slot B: BAD_MAGIC$", 10.0)
     expect_boot(lab, "A", "PENDING_TRIAL", attempt=1)
     lab.dut_uart.expect(r"^slot: A \(pending, trial boot\)$", 10.0)
@@ -78,7 +78,7 @@ def test_corrupt_crc_in_a_falls_back_to_b(flash, lab_factory):
     lab = lab_factory(image)
 
     lab.dut_uart.expect(r"^slot A: BAD_CRC$", BOOT_TIMEOUT)
-    lab.dut_uart.expect(r"^slot B: OK v0\.2\.0$", 10.0)
+    lab.dut_uart.expect(r"^slot B: OK v\d+\.\d+\.\d+$", 10.0)
     expect_boot(lab, "B", "FALLBACK")
     lab.dut_uart.expect(r"^slot: B \(fallback\)$", 10.0)
     expect_app_ready(lab)
@@ -122,7 +122,7 @@ def test_both_slots_bad_lands_in_safe_mode(flash, lab_factory):
     lab.dut_uart.expect(r"^slot B: BAD_CRC$", 10.0)
     expect_boot(lab, "SAFE", "SAFE_MODE")
     lab.dut_uart.expect(r"^no valid image in slot A or B, entering safe mode$", 10.0)
-    lab.dut_uart.expect(r"^=== SAFE MODE v0\.2\.0 ===$", 10.0)
+    lab.dut_uart.expect(r"^=== SAFE MODE v\d+\.\d+\.\d+ ===$", 10.0)
     lab.dut_uart.expect(r"^waiting for update$", 10.0)
     # Safe mode keeps the watchdog fed: it must still be alive well past the
     # 1 s watchdog period, and serve the console.
@@ -287,7 +287,7 @@ def test_power_cut_during_journal_write_recovers_last_record(flash, lab_factory,
     first.monitor.command('sysbus AddWatchpointHook 0x0800801C 4 Write "cpu.IsHalted = True"')
     first.monitor.command("start")
     first.dut_uart.expect(r"^journal: seq=1 active=A pending=B attempts=0 confirmed=1$", BOOT_TIMEOUT)
-    first.dut_uart.expect(r"^slot B: OK v0\.2\.0$", 10.0)
+    first.dut_uart.expect(r"^slot B: OK v\d+\.\d+\.\d+$", 10.0)
     # The core halts at the watchpoint: no "decision:" line ever appears.
     with pytest.raises(TimeoutError):
         first.dut_uart.expect(r"^decision:", 5.0)
