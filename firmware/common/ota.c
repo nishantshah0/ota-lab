@@ -4,6 +4,8 @@
 #include "bootlog.h"
 #include "uart.h"
 #include "fmt.h"
+#include "sysreset.h"
+#include "update.h"
 
 static struct ota_status st;
 
@@ -166,6 +168,11 @@ void ota_console_line(const char *line)
         ota_print_version();
     } else if (streq(line, "confirm")) {
         ota_confirm();
+    } else if (streq(line, "update")) {
+        update_print_status();
+    } else if (streq(line, "reboot")) {
+        uart_puts("reboot: requested\r\n");
+        system_reset();
     } else {
         uart_puts("ERR unknown command\r\n");
     }

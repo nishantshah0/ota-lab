@@ -1,13 +1,11 @@
 /*
- * OTA lab application, phase 2.
+ * OTA lab application, phase 3.
  *
  * Runs from slot A or slot B behind the bootloader. On top of the phase 1
- * behaviour (LED, heartbeat, CAN echo) it:
- *   - feeds the watchdog the bootloader started, but only until
- *     CONFIRM_DEADLINE_MS unless it has confirmed itself by then;
- *   - confirms itself after the first heartbeat, which stands in for a
- *     real self-test;
- *   - serves the console commands "state", "log", "version", "confirm".
+ * and 2 behaviour (LED, heartbeat, CAN echo, watchdog, confirm, console) it
+ * hosts the update task: CAN frames on the update IDs are queued from the
+ * CAN ISR and handled in the main loop, where chunks are written into the
+ * inactive slot (see update.c and ota_proto.h).
  *
  * Build variants for the rollback tests:
  *   APP_VARIANT_NOCONFIRM  never confirms; the watchdog resets it 1 s after
@@ -28,6 +26,7 @@
 #include "iwdg.h"
 #include "image.h"
 #include "ota.h"
+#include "update.h"
 #include "console.h"
 #include "fmt.h"
 
@@ -57,10 +56,14 @@ static void on_tick(void)
     if ((g_ticks % (TICK_HZ * HEARTBEAT_MS / 1000U)) == 0U) {
         g_seconds++;
     }
+    update_tick_10ms();
 }
 
 static void on_can_rx(const struct can_frame *rx)
 {
+    if (update_enqueue(rx)) {
+        return; /* update protocol frames are never echoed */
+    }
     struct can_frame tx = *rx;
     tx.id = tx.extended ? (tx.id + 1U) & 0x1FFFFFFFU : (tx.id + 1U) & 0x7FFU;
     g_can_rx_count++;
@@ -80,7 +83,7 @@ static void print_banner(bool can_ok)
     fmt_put_udec(h->ver_minor);
     uart_putc('.');
     fmt_put_udec(h->ver_patch);
-    uart_puts(" (phase 2) ===\r\n");
+    uart_puts(" (phase 3) ===\r\n");
     uart_puts("board: STM32F4 Discovery (Renode)\r\n");
     uart_puts("slot: ");
     uart_puts(s->running_slot == SLOT_A ? "A" : "B");
@@ -107,6 +110,7 @@ int main(void)
     gpio_write(LED_PORT, LED_PIN, false);
 
     ota_init(image_self_slot());
+    update_init(image_self_slot());
     bool can_ok = can_init(on_can_rx);
     print_banner(can_ok);
 
@@ -122,6 +126,7 @@ int main(void)
     uint32_t printed = 0;
     for (;;) {
         cpu_wfi();
+        update_poll();
         console_poll();
         while (printed < g_seconds) {
             printed++;

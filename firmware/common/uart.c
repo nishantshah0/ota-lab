@@ -4,7 +4,7 @@
 #include "stm32f4_regs.h"
 
 #define UART      USART2_BASE
-#define RX_BUF_SZ 256U   /* power of two */
+#define RX_BUF_SZ 4096U  /* power of two; sized for a 32 frame SLCAN burst arriving unpaced */
 
 static volatile uint8_t  rx_buf[RX_BUF_SZ];
 static volatile uint32_t rx_head; /* written by ISR */

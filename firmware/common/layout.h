@@ -1,6 +1,6 @@
 /*
  * Flash layout shared by the bootloader, the images and the host tools.
- * Keep in sync with tools/otaimg.py and docs/ARCHITECTURE.md.
+ * Keep in sync with tools/flashimage.py and docs/ARCHITECTURE.md.
  *
  *   sector  start        size   use
  *   0..1    0x08000000   32K    bootloader (public key compiled in)
@@ -10,7 +10,8 @@
  *   5       0x08020000  128K    slot A: 512 byte header + image
  *   6       0x08040000  128K    slot B: 512 byte header + image
  *   7       0x08060000  128K    boot event log ring
- *   8..11   0x08080000  512K    unused
+ *   8       0x08080000  128K    update progress records
+ *   9..11   0x080A0000  384K    unused
  */
 #ifndef LAYOUT_H
 #define LAYOUT_H
@@ -43,6 +44,10 @@
 #define BOOTLOG_ADDR          0x08060000U
 #define BOOTLOG_SECTOR        7U
 #define BOOTLOG_SIZE          0x00020000U
+
+#define PROGRESS_ADDR         0x08080000U
+#define PROGRESS_SECTOR       8U
+#define PROGRESS_SIZE         0x00020000U
 
 #define SLOT_A                0U
 #define SLOT_B                1U
