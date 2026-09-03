@@ -14,4 +14,8 @@
  */
 void timer_init_periodic(uint32_t tick_hz, void (*callback)(void));
 
+/* Microseconds since timer_init_periodic(), from the tick count and the
+ * running counter (10 us resolution). Wraps after about 71 minutes. */
+uint32_t timer_micros(void);
+
 #endif

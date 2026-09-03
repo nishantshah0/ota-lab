@@ -26,8 +26,31 @@
 #include "uart.h"
 #include "can.h"
 #include "fmt.h"
+#include "timer.h"
 
 #define LINE_MAX 64U
+
+/*
+ * Renode's CAN hub delivers frames with no bus timing, so a burst from the
+ * host would land on the DUT faster than its 3-deep RX FIFO can be drained.
+ * Real CAN spaces frames by the bit time on the wire: about 250 us for an
+ * 8 byte standard frame at 500 kbit/s. The gateway enforces that spacing.
+ */
+#define CAN_FRAME_US 250U
+static uint32_t last_tx_us;
+
+static void tick_noop(void)
+{
+}
+
+static bool paced_can_send(const struct can_frame *f)
+{
+    while ((uint32_t)(timer_micros() - last_tx_us) < CAN_FRAME_US) {
+    }
+    bool ok = can_send(f);
+    last_tx_us = timer_micros();
+    return ok;
+}
 #define RXQ_SZ   16U   /* power of two */
 
 /*
@@ -108,7 +131,7 @@ static bool handle_send(const char *line, unsigned len, bool extended)
         }
         f.data[i] = (uint8_t)b;
     }
-    return can_send(&f);
+    return paced_can_send(&f);
 }
 
 static void handle_line(const char *line, unsigned len)
@@ -134,6 +157,7 @@ static void handle_line(const char *line, unsigned len)
 int main(void)
 {
     uart_init(115200, true);
+    timer_init_periodic(100, tick_noop);
     bool can_ok = can_init(on_can_rx);
 
     uart_puts("\r\nGW ready can1=");

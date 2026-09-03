@@ -9,10 +9,13 @@
 #define TIM TIM2_BASE
 
 static void (*tick_cb)(void);
+static volatile uint32_t ticks;
+static uint32_t tick_us;
 
 void timer_init_periodic(uint32_t tick_hz, void (*callback)(void))
 {
     tick_cb = callback;
+    tick_us = 1000000U / tick_hz;
 
     rcc_enable_apb1(RCC_APB1ENR_TIM2EN);
 
@@ -36,7 +39,19 @@ void TIM2_IRQHandler(void)
 {
     /* UIF is rc_w0: write zero to the bit to clear it. */
     TIM_SR(TIM) &= ~TIM_SR_UIF;
+    ticks++;
     if (tick_cb != 0) {
         tick_cb();
     }
+}
+
+uint32_t timer_micros(void)
+{
+    uint32_t t1, cnt, t2;
+    do {
+        t1 = ticks;
+        cnt = TIM_CNT(TIM);
+        t2 = ticks;
+    } while (t1 != t2);            /* re-read if a tick landed in between */
+    return t1 * tick_us + cnt * 10U; /* counter runs at 100 kHz */
 }
