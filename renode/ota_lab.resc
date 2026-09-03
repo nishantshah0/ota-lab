@@ -1,10 +1,11 @@
 :name: OTA lab
-:description: Device under test plus a CAN-to-UART gateway on a shared CAN bus.
+:description: Device under test (bootloader + slots) plus a CAN-to-UART gateway on a shared CAN bus.
 
 # Variables. The pytest harness overrides these before including this script;
 # the defaults make "renode renode/ota_lab.resc" from the repository root work
-# for interactive use.
-$dut_bin?=@build/firmware/app/ota_app.elf
+# for interactive use after a build.
+$boot_elf?=@build/firmware/boot/boot.elf
+$flash_bin?=@build/flash/default.bin
 $gw_bin?=@build/firmware/can_gateway/can_gateway.elf
 $dut_uart_port?=3456
 $gw_uart_port?=3457
@@ -18,14 +19,32 @@ emulation CreateCANHub "canbus"
 emulation CreateServerSocketTerminal $dut_uart_port "dut_term" false
 emulation CreateServerSocketTerminal $gw_uart_port "gw_term" false
 
-# Device under test.
+# Device under test. The ELF supplies symbols and the initial PC/SP; the
+# flash image supplies the whole 512 KiB flash content (bootloader, journal,
+# safe-mode image, slots, boot log) the way a programmer would.
 mach create "dut"
 machine LoadPlatformDescription @renode/stm32f4_ota.repl
-sysbus LoadELF $dut_bin
+sysbus LoadELF $boot_elf
+sysbus LoadBinary $flash_bin 0x08000000
 connector Connect sysbus.usart2 dut_term
 connector Connect sysbus.can1 canbus
 
-# Gateway: the same board with the CAN-to-UART bridge firmware.
+# Renode runs the machine's "reset" macro after a watchdog or software
+# reset. Real silicon re-reads the vector table at 0x08000000 (aliased to 0
+# by the boot pins); Renode's Cortex-M model needs to be re-pointed at it.
+# Re-loading the bootloader ELF does exactly that and writes back bytes
+# identical to what is already in flash, so journal, slots and boot log
+# survive the reset just like on hardware.
+macro reset
+"""
+    sysbus LoadELF $boot_elf
+"""
+
+# The flash controller model ignores the PG/PSIZE and error-clear bits the
+# driver writes for real hardware and logs a warning per word otherwise.
+logLevel 3 sysbus.flash_controller
+
+# Gateway: the same board with the CAN-to-UART bridge firmware, no bootloader.
 mach create "gateway"
 machine LoadPlatformDescription @renode/stm32f4_ota.repl
 sysbus LoadELF $gw_bin
