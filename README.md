@@ -44,7 +44,9 @@ a signed image in 6 byte chunks with a 32 chunk window, NAK and
 retransmit, the device writes it into the inactive slot, keeps a progress
 record in flash so a reset mid-transfer resumes from the last window,
 validates CRC and signature on FINISH, refuses versions lower than the
-running one unless forced, and only then marks the slot pending.
+running one unless forced, and only then marks the slot pending. The frame
+formats, the transfer sequence, resume after reset and the anti-rollback
+rule are specified in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#firmware-delivery-over-can).
 
 ```
 BOOT v0.3.0 (phase 3)
@@ -131,6 +133,20 @@ the device, `log` prints the boot history and `state` the journal. On the
 gateway, `t1232AABB` followed by Enter sends CAN ID 0x123 with two bytes;
 the device answers `t1242AABB`.
 
+### Device console
+
+Commands on the device UART (port 3456 in the interactive session, or the
+`send_command` helper in the test harness):
+
+| Command | Prints |
+|---------|--------|
+| `state` | journal state: seq, active slot, pending slot, attempts, confirmed, bank usage |
+| `log` | every boot log entry (slot, reason, attempts, reset cause, validation results, version) |
+| `version` | running slot and the version and size from its signed header |
+| `update` | transfer state, next chunk, total, receive counters, last progress record |
+| `confirm` | mark the running slot active (the app does this itself after its first heartbeat) |
+| `reboot` | software reset through the bootloader |
+
 ### Sending an update
 
 With the interactive session running:
@@ -157,7 +173,7 @@ off the repository, and rebuild the bootloader with the new public key.
 ## Repository layout
 
 ```
-firmware/common/      startup, linker script, drivers, journal, boot log, image header
+firmware/common/      startup, linker script, drivers, journal, boot log, image header, update task
 firmware/common/monocypher/  vendored Monocypher 4.0.2
 firmware/boot/        A/B bootloader
 firmware/safe/        safe-mode image
