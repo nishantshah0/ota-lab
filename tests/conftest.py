@@ -110,6 +110,18 @@ class FlashBuilder:
         self.img.place(addr, data)
         return self
 
+    def from_dump(self, dump: bytes) -> "FlashBuilder":
+        """Continue from a flash image dumped out of a previous run."""
+        self.img = flashimage.FlashImage.from_bytes(dump)
+        return self
+
+    def flip_bits(self, addr: int, bits) -> "FlashBuilder":
+        """Flip the given bit offsets (relative to addr) in the image."""
+        for bit in bits:
+            off = addr - flashimage.FLASH_BASE + bit // 8
+            self.img.data[off] ^= 1 << (bit % 8)
+        return self
+
     def build(self) -> flashimage.FlashImage:
         return self.img
 

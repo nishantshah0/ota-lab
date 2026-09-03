@@ -276,6 +276,17 @@ class RenodeLab:
             time.sleep(0.5)
         raise TimeoutError("Renode script did not create both machines; see " + str(self.stdout_log))
 
+    def arm_flash_write_cut(self, addr: int) -> None:
+        """Halt the core the moment it writes the 32-bit word at addr (the
+        write itself does not happen). Simulates a power cut at that exact
+        flash operation. Call before the emulation is started."""
+        self.monitor.command(f'sysbus AddWatchpointHook 0x{addr:08X} 4 Write "cpu.IsHalted = True"')
+
+    def is_halted(self) -> bool:
+        self.monitor.command('mach set "dut"')
+        out = self.monitor.command("sysbus.cpu IsHalted")
+        return "True" in out
+
     def check_alive(self) -> None:
         """Raise with the tail of Renode's output if the process has exited."""
         if self.proc is not None and self.proc.poll() is not None:
@@ -326,7 +337,9 @@ class RenodeLab:
             if line.text.startswith("LOG END"):
                 return entries
             if line.text.startswith("LOG idx="):
-                fields = dict(kv.split("=", 1) for kv in line.text[4:].split())
+                tokens = line.text[4:].split()
+                fields = dict(kv.split("=", 1) for kv in tokens if "=" in kv)
+                fields["torn"] = "TORN" in tokens
                 for k in ("idx", "seq", "jseq", "attempts"):
                     if k in fields:
                         fields[k] = int(fields[k])
