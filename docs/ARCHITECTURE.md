@@ -3,9 +3,9 @@
 Secure OTA firmware update lab for STM32F4, emulated in Renode, tested with pytest.
 This document is updated at the end of every phase.
 
-Current phase: **3, firmware delivery over CAN** (built, run and tested;
-bring-up logs in [PHASE1_NOTES.md](PHASE1_NOTES.md), [PHASE2_NOTES.md](PHASE2_NOTES.md)
-and [PHASE3_NOTES.md](PHASE3_NOTES.md)).
+Current phase: **4, fault injection** (built, run and tested; bring-up logs
+in [PHASE1_NOTES.md](PHASE1_NOTES.md), [PHASE2_NOTES.md](PHASE2_NOTES.md),
+[PHASE3_NOTES.md](PHASE3_NOTES.md) and [PHASE4_NOTES.md](PHASE4_NOTES.md)).
 
 ## Repository layout
 
@@ -465,6 +465,62 @@ text per 6 byte chunk. The device programs one 192 byte window per ACK,
 so flash is not the limit. With 5% simulated frame loss the same image
 needs about 1.9 times the frames.
 
+## Fault model and fault injection
+
+Phase 4 turns the recovery arguments of phases 2 and 3 into experiments.
+Every fault is injected from outside the firmware, the device is restarted
+cold from the flash content it had at the moment of the fault, and the
+same invariants are checked each time.
+
+### Faults injected
+
+| Fault | Mechanism | Where |
+|-------|-----------|-------|
+| Power cut at a specific flash write | Renode watchpoint on the target word (`sysbus AddWatchpointHook <addr> 4 Write "cpu.IsHalted = True"`); the write does not happen; flash is dumped, Renode killed, a fresh Renode boots from the dump | `tests/test_faults.py`, `RenodeLab.arm_flash_write_cut()` |
+| Random power cuts during an update | Seeded choice of three cut points among chunk words and progress record words, applied one after another with a restart between each | `test_random_power_cut_campaign` |
+| Bit rot | Bits flipped in a dumped image before the restart: slot body, signature, newest journal record, boot log entry | `FlashBuilder.flip_bits()` |
+| Bus faults | Host sender knobs: `drop_rate`, `dup_rate`, `reorder_rate`, `corrupt_chunk` | `tools/ota_send.py` |
+| Garbage and malformed frames | Random bytes on the protocol identifiers while idle, START_B without START_A, oversize START, FINISH with nothing started | `test_garbage_and_malformed_frames_do_not_break_the_device` |
+
+### Invariants checked after every restart
+
+1. The device boots the active slot. A fault during an update must never
+   send it to safe mode or to a trial of the half-written slot.
+2. No slot is pending until FINISH has been accepted. The journal is only
+   written after validation, so a cut anywhere before that leaves the
+   pending flag clear.
+3. Every byte a progress record claims is in flash: for the last valid
+   RECEIVING record, `slot[0 : chunks * 6]` equals the image prefix. This
+   is the property that makes resume safe, and it holds because the record
+   is written after the window it describes.
+4. The update completes on resume and the new image boots and confirms.
+
+### Cut points and what they leave behind
+
+| Cut lands on | Flash afterwards | Recovery |
+|--------------|------------------|----------|
+| a chunk word inside a window | partial window, no record for it | resume from the previous record; the partial window is rewritten with identical bits |
+| a progress record word | torn record (bad CRC) | previous record wins; resume from its count |
+| the journal word that marks the slot pending | torn journal record; every chunk in flash; progress record says RECEIVING with chunks = total | boots A with nothing pending; the next START resumes at the end, sends nothing, FINISH validates and marks pending |
+| the confirm record of a trial image | torn confirm; attempt record intact | next boot is trial 2, which confirms |
+
+The last two rows depend on one rule in `update.c`: a progress record with
+`chunks == total` is still resumable. Without it a cut during FINISH would
+force a full retransfer.
+
+### Bit rot outcomes
+
+| Corrupted | Detected by | Effect |
+|-----------|-------------|--------|
+| slot body | CRC-32, before any crypto | pending dropped, active slot boots, a new transfer replaces the image |
+| signature | Ed25519 verify | same as above |
+| newest journal record | record CRC | previous record used |
+| boot log entry | entry CRC | listed as TORN, no effect on boot |
+
+Undetectable cases, by construction: a flipped bit in the bootloader or
+the safe-mode image. Both are part of the trusted base and outside what
+this design can repair; a device that suffers that needs a programmer.
+
 ## Application and safe mode
 
 `firmware/app`: phase 1 behaviour (LED, heartbeat, CAN echo) plus the
@@ -542,6 +598,17 @@ Tests:
 | `test_forged_version_in_start_does_not_bypass_anti_rollback` | START claims 9.9.9, signed header says 0.1.0, refused at FINISH |
 | `test_cannot_target_the_running_slot` | SLOT_BUSY |
 | `test_never_confirming_update_rolls_back_to_a` | end to end: transfer, reboot, three trials, rollback |
+| `test_power_cut_during_chunk_write_resumes` | cut inside a window at chunks 33, 1000, 3200; resume from the previous window |
+| `test_power_cut_during_progress_record_write` | torn progress record ignored, resume from the previous one |
+| `test_power_cut_during_finish_journal_write` | torn pending record; next START resumes at the end and sends nothing |
+| `test_power_cut_during_confirm_write` | torn confirm record; trial 2 confirms, no rollback |
+| `test_random_power_cut_campaign` | three seeded random cuts with restarts and invariant checks, then completion |
+| `test_bit_rot_in_slot_body_is_caught_and_repaired` | BAD_CRC, pending dropped, A boots, new transfer repairs B |
+| `test_bit_rot_in_signature_is_caught` | BAD_SIGNATURE, fallback to A |
+| `test_bit_rot_in_journal_record_falls_back_to_previous` | corrupted newest record ignored |
+| `test_bit_rot_in_boot_log_is_reported_not_fatal` | entry shown as TORN, boot unaffected |
+| `test_bus_duplicates_reordering_and_loss` | 3% duplicates, 2% swaps, 3% loss at once |
+| `test_garbage_and_malformed_frames_do_not_break_the_device` | fuzz while idle, malformed control sequences, then a normal transfer |
 
 ## CI and reproducibility
 
@@ -583,5 +650,5 @@ docker build -t ota-lab . && docker run --rm ota-lab
 | 1 | foundation: skeleton, Renode lab, UART/CAN plumbing, harness, CI |
 | 2 | A/B bootloader, signed header, journal with rollback, watchdog, safe mode, boot log |
 | 3 | chunked firmware transfer over CAN into the inactive slot with resume and anti-rollback |
-| 4 | fault injection (power cut mid-write, corrupted chunks, bad signatures) |
+| 4 | fault injection: power cuts at chosen and random flash writes, bit rot, bus faults, fuzzing |
 | 5 | fleet dashboard over many Renode instances |

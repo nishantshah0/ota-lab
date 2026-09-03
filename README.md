@@ -14,9 +14,9 @@ builds the firmware and runs the suite in GitHub Actions and in Docker.
 
 The end goal is a device that receives a signed firmware image over CAN,
 verifies it, installs it into the inactive slot, and rolls back on its own
-if the new image fails to prove itself. Phases 1 to 3 are done: the device
-can now be updated end to end over CAN from a host tool; fault injection
-is next.
+if the new image fails to prove itself. Phases 1 to 4 are done: the device
+is updated end to end over CAN from a host tool, and the recovery paths
+have been exercised with injected power cuts, bit rot and bus faults.
 
 ## Status
 
@@ -25,7 +25,7 @@ is next.
 | 1 | Bare-metal skeleton, Renode lab, UART and CAN plumbing, test harness, CI | Done |
 | 2 | A/B bootloader, Ed25519 signed images, journaled boot state with rollback, watchdog, safe mode, boot log | Done |
 | 3 | Chunked firmware delivery over CAN into the inactive slot, resume after reset, anti-rollback | Done |
-| 4 | Fault injection: power cut mid-write, corrupted chunks, bad signatures | Planned |
+| 4 | Fault injection: power cuts at chosen and random flash writes, bit rot, bus faults, fuzzing | Done |
 | 5 | Fleet view across many emulated devices | Planned |
 
 ## What runs today
@@ -216,10 +216,15 @@ docs/                 architecture, memory map, phase notes
 | `test_forged_version_in_start_does_not_bypass_anti_rollback` | the signed header is the authority |
 | `test_cannot_target_the_running_slot` | SLOT_BUSY |
 | `test_never_confirming_update_rolls_back_to_a` | transfer, reboot, three trials, rollback, end to end |
+| `test_power_cut_during_*` (4 tests) | watchpoint power cuts on chunk, progress record, pending and confirm writes; resume or re-trial |
+| `test_random_power_cut_campaign` | seeded random cuts with restarts and flash invariants, then completion |
+| `test_bit_rot_in_*` (4 tests) | slot body, signature, journal record, boot log entry |
+| `test_bus_duplicates_reordering_and_loss` | duplicates, swaps and loss at once |
+| `test_garbage_and_malformed_frames_do_not_break_the_device` | fuzz and malformed control sequences |
 
 Timing assertions use the emulator's virtual clock rather than the host
 clock. Three consecutive local runs and both CI jobs report the same
-33 passed, 1 skipped.
+47 passed, 1 skipped.
 
 ## Flash layout (short version)
 
@@ -252,13 +257,17 @@ point, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 * The stock STM32F4 platform file references an SVD that Renode downloads
   on first use, so the first run needs network access.
 
+* A watchpoint (`sysbus AddWatchpointHook`) halts the core before the
+  watched write happens, which is exactly a power cut at that flash
+  operation; the tests dump flash through the monitor and restart from it.
 * Renode's CAN hub has no bus timing, so the gateway paces its frames to
   the 250 microsecond bus time of a 500 kbit/s frame; without that the
   DUT's three-deep receive FIFO overflows on every burst.
 
 More in [docs/PHASE1_NOTES.md](docs/PHASE1_NOTES.md),
-[docs/PHASE2_NOTES.md](docs/PHASE2_NOTES.md) and
-[docs/PHASE3_NOTES.md](docs/PHASE3_NOTES.md).
+[docs/PHASE2_NOTES.md](docs/PHASE2_NOTES.md),
+[docs/PHASE3_NOTES.md](docs/PHASE3_NOTES.md) and
+[docs/PHASE4_NOTES.md](docs/PHASE4_NOTES.md).
 
 ## License
 
