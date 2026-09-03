@@ -18,6 +18,9 @@ void uart_putc(char c);
 void uart_puts(const char *s);
 void uart_write(const uint8_t *buf, size_t len);
 
+/* Block until the last byte has left the shift register (TC). */
+void uart_flush(void);
+
 /* Returns the next received byte, or -1 if nothing is pending. */
 int uart_getc(void);
 

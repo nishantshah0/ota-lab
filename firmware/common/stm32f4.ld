@@ -50,7 +50,9 @@ MEMORY
 {
     FLASH (rx)  : ORIGIN = __flash_origin, LENGTH = __flash_length
     RAM   (rwx) : ORIGIN = 0x20000000,     LENGTH = 128K
-    CCM   (rw)  : ORIGIN = 0x10000000,     LENGTH = 64K
+    /* First 64 bytes of CCM are the boot marker shared with the bootloader
+     * at a fixed address (see boot_marker.h); .noinit starts after it. */
+    CCM   (rw)  : ORIGIN = 0x10000040,     LENGTH = 64K - 0x40
 }
 
 /* Top of RAM. The first word of the vector table is the initial stack pointer,
@@ -77,17 +79,11 @@ SECTIONS
     } > FLASH
 
     /*
-     * Image descriptor placed immediately after the vector table at a fixed
-     * offset. Phase 1 stores only a magic and a version string. The signed
-     * header of later phases will replace this with a full descriptor
-     * (length, hash, signature, slot flags) at the same fixed location.
+     * No image descriptor lives in the linked image any more. The signed
+     * 512 byte header of phase 2 is prepended by tools/sign_image.py and
+     * occupies [slot base, slot base + 0x200); the image itself links at
+     * slot base + 0x200 so its vector table stays 512 byte aligned.
      */
-    .fw_info :
-    {
-        . = ALIGN(4);
-        KEEP(*(.fw_info))
-        . = ALIGN(4);
-    } > FLASH
 
     /* Code and read-only data live in flash and execute in place. */
     .text :

@@ -217,31 +217,13 @@ const vector_t g_vector_table[16 + 82] = {
     FPU_IRQHandler,
 };
 
-/*
- * Image descriptor, placed right after the vector table by the linker script.
- * A host tool can locate it at a fixed offset (392 bytes) from the image start.
- */
-struct fw_info {
-    uint32_t magic;
-    char     version[16];
-    uint32_t reserved[3];
-};
-
-__attribute__((section(".fw_info"), used))
-const struct fw_info g_fw_info = {
-    .magic    = 0x4F54414CU, /* "OTAL" */
-    .version  = FW_VERSION,
-    .reserved = {0, 0, 0},
-};
-
 #define SCB_VTOR (*(volatile uint32_t *)0xE000ED08U)
 
 void Reset_Handler(void)
 {
     /*
-     * Point the core at our vector table. Redundant when we run from the
-     * start of flash (the reset default), but required once a bootloader
-     * jumps to an application linked at a slot address.
+     * Point the core at our vector table. The bootloader sets VTOR before
+     * jumping, but an image must not depend on who launched it.
      */
     SCB_VTOR = (uint32_t)g_vector_table;
 

@@ -57,6 +57,12 @@ void uart_write(const uint8_t *buf, size_t len)
     }
 }
 
+void uart_flush(void)
+{
+    while ((USART_SR(UART) & USART_SR_TC) == 0U) {
+    }
+}
+
 int uart_getc(void)
 {
     if (!rx_irq_mode) {
