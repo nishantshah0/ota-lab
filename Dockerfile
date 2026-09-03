@@ -28,6 +28,7 @@ ENV PATH="/opt/renode:${PATH}" \
 WORKDIR /work
 
 COPY tests/requirements.txt tests/requirements.txt
+COPY tools/requirements.txt tools/requirements.txt
 RUN pip3 install --no-cache-dir -r tests/requirements.txt
 
 COPY . .
