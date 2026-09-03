@@ -1,1 +1,22 @@
-add_firmware(ota_app main.c)
+# The application is linked once per slot and once per variant. Slot images
+# start 512 bytes into the slot, after the signed header.
+set(APP_VARIANTS good noconfirm hang)
+set(APP_DEFINES_good "")
+set(APP_DEFINES_noconfirm APP_VARIANT_NOCONFIRM)
+set(APP_DEFINES_hang APP_VARIANT_HANG)
+
+foreach(variant IN LISTS APP_VARIANTS)
+    foreach(slot IN ITEMS A B)
+        if(slot STREQUAL "A")
+            set(origin 0x08020200)
+        else()
+            set(origin 0x08040200)
+        endif()
+        set(name app_${variant}_${slot})
+        add_firmware(${name} ${origin} 0x1FE00 main.c)
+        if(APP_DEFINES_${variant})
+            target_compile_definitions(${name}.elf PRIVATE ${APP_DEFINES_${variant}})
+        endif()
+        add_signed_image(${name} ${slot})
+    endforeach()
+endforeach()
