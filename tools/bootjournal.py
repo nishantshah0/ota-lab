@@ -71,6 +71,41 @@ class LogEntry:
     version: int
 
 
+@dataclass
+class Progress:
+    seq: int
+    header_crc: int
+    image_size: int
+    slot: int
+    state: int      # 1 receiving, 2 done, 0xFE aborted
+    chunks: int
+    flags: int
+
+
+PROGRESS_SIZE = 32
+
+
+def parse_progress(data: bytes) -> list[Progress | None]:
+    out: list[Progress | None] = []
+    for off in range(0, len(data), PROGRESS_SIZE):
+        r = data[off:off + PROGRESS_SIZE]
+        if r == b"\xff" * PROGRESS_SIZE:
+            break
+        if (zlib.crc32(r[:28]) & 0xFFFFFFFF) != struct.unpack("<I", r[28:])[0]:
+            out.append(None)
+            continue
+        seq, hcrc, size, slot, state, chunks, flags = struct.unpack("<IIIBBHB", r[:17])
+        out.append(Progress(seq, hcrc, size, slot, state, chunks, flags))
+    return out
+
+
+def last_progress(data: bytes) -> Progress | None:
+    for rec in reversed(parse_progress(data)):
+        if rec is not None:
+            return rec
+    return None
+
+
 def parse_log(data: bytes) -> list[LogEntry | None]:
     out: list[LogEntry | None] = []
     for off in range(0, len(data), LOG_ENTRY_SIZE):

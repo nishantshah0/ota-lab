@@ -13,6 +13,8 @@ timeout. Exit status 0 means the device accepted the image (verdict OK).
 
 Test knobs:
   --drop-rate     probability of not transmitting a DATA frame (simulated loss)
+  --dup-rate      probability of transmitting a DATA frame twice
+  --reorder-rate  probability of swapping a DATA frame with the next one
   --corrupt-chunk flip one bit in the payload of that chunk
   --stop-after    send only that many chunks, then return (for resume tests)
 
@@ -25,6 +27,7 @@ import argparse
 import random
 import socket
 import sys
+import threading
 import time
 import zlib
 from dataclasses import dataclass, field
@@ -116,16 +119,21 @@ class TransferError(Exception):
 class Sender:
     def __init__(self, io: LineIO, *, verbose: bool = True, ack_timeout: float = 5.0,
                  max_retries: int = 10, drop_rate: float = 0.0, seed: int = 0,
-                 corrupt_chunk: int | None = None):
+                 corrupt_chunk: int | None = None, dup_rate: float = 0.0,
+                 reorder_rate: float = 0.0):
         self.io = io
         self.verbose = verbose
         self.ack_timeout = ack_timeout
         self.max_retries = max_retries
         self.rng = random.Random(seed)
         self.drop_rate = drop_rate
+        self.dup_rate = dup_rate
+        self.reorder_rate = reorder_rate
         self.corrupt_chunk = corrupt_chunk
+        self.cancel = threading.Event()   # set from another thread to abort
         self.naks = 0
         self.retransmits = 0
+        self.restarts = 0
         self.dropped = 0
         self.log: list[str] = []
 
@@ -143,12 +151,16 @@ class Sender:
         """Next device reply frame; gateway OK/ERR lines and other traffic are skipped."""
         deadline = time.monotonic() + timeout
         while True:
+            if self.cancel.is_set():
+                raise TransferError("cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            line = self.io.readline(remaining)
+            line = self.io.readline(min(remaining, 0.5))
             if line is None:
-                return None
+                if time.monotonic() >= deadline:
+                    return None
+                continue
             if line == "OK" or line == "":
                 continue
             if line == "ERR":
@@ -198,12 +210,29 @@ class Sender:
         # point, or it would wait for an ACK number the device never emits.
         end = min((base // WINDOW + 1) * WINDOW, total)
         dropped_here = []
+        pending_swap = None
         for seq in range(base, end):
+            if self.cancel.is_set():
+                raise TransferError("cancelled")
             if self.drop_rate and self.rng.random() < self.drop_rate:
                 self.dropped += 1
                 dropped_here.append(seq)
                 continue
-            self.send_frame(ID_DATA, self.data_frame(image, seq))
+            frame = self.data_frame(image, seq)
+            if pending_swap is not None:
+                # Reordering: the previous frame goes out after this one.
+                self.send_frame(ID_DATA, frame)
+                self.send_frame(ID_DATA, pending_swap)
+                pending_swap = None
+                continue
+            if self.reorder_rate and self.rng.random() < self.reorder_rate:
+                pending_swap = frame
+                continue
+            self.send_frame(ID_DATA, frame)
+            if self.dup_rate and self.rng.random() < self.dup_rate:
+                self.send_frame(ID_DATA, frame)
+        if pending_swap is not None:
+            self.send_frame(ID_DATA, pending_swap)
         if self.verbose and (dropped_here or base % WINDOW):
             self._say(f"  sent {base}..{end - 1}, dropped {dropped_here}")
         return end
@@ -252,6 +281,18 @@ class Sender:
                         base = r.seq
                         self.retransmits += 1
                         break
+                    if r.code == 2:
+                        # NOT_STARTED: the device lost its RAM state (timeout or
+                        # reset). Its flash still knows the transfer: START again
+                        # and continue from wherever it says.
+                        self.restarts += 1
+                        r2 = self.start(image, slot, force)
+                        if r2.type != ACK:
+                            raise TransferError(f"re-START after NOT_STARTED refused: {r2}")
+                        self._say(f"device forgot the transfer, re-STARTed at chunk {r2.seq}")
+                        base = r2.seq
+                        stalled = 0
+                        break
                     raise TransferError(f"device NAK during data: {CODES.get(r.code, r.code)} at {r.seq}")
                 if r.type == ACK:
                     if r.seq >= end:
@@ -285,6 +326,8 @@ def main() -> int:
     ap.add_argument("--drop-rate", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--corrupt-chunk", type=int)
+    ap.add_argument("--dup-rate", type=float, default=0.0, help="probability of sending a DATA frame twice")
+    ap.add_argument("--reorder-rate", type=float, default=0.0, help="probability of swapping a DATA frame with the next")
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
@@ -293,7 +336,8 @@ def main() -> int:
     slot = otaimg.slot_index(args.slot) if args.slot else otaimg.parse_header(image).target_slot
     io = SocketLineIO(args.host, args.port)
     sender = Sender(io, verbose=not args.quiet, drop_rate=args.drop_rate, seed=args.seed,
-                    corrupt_chunk=args.corrupt_chunk)
+                    corrupt_chunk=args.corrupt_chunk, dup_rate=args.dup_rate,
+                    reorder_rate=args.reorder_rate)
     result = sender.transfer(image, slot, force=args.force, stop_after=args.stop_after)
     io.close()
     return 0 if result.accepted else 1
