@@ -14,19 +14,24 @@ builds the firmware and runs the suite in GitHub Actions and in Docker.
 
 The end goal is a device that receives a signed firmware image over CAN,
 verifies it, installs it into the inactive slot, and rolls back on its own
-if the new image fails to prove itself. Phases 1 to 4 are done: the device
-is updated end to end over CAN from a host tool, and the recovery paths
-have been exercised with injected power cuts, bit rot and bus faults.
+if the new image fails to prove itself. All five phases are done: devices
+are updated end to end over CAN from a host tool, the recovery paths have
+been exercised with injected power cuts, bit rot and bus faults, and a
+fleet of emulated devices can be updated in stages.
 
 ## Status
 
-| Phase | Scope | State |
-|-------|-------|-------|
-| 1 | Bare-metal skeleton, Renode lab, UART and CAN plumbing, test harness, CI | Done |
-| 2 | A/B bootloader, Ed25519 signed images, journaled boot state with rollback, watchdog, safe mode, boot log | Done |
-| 3 | Chunked firmware delivery over CAN into the inactive slot, resume after reset, anti-rollback | Done |
-| 4 | Fault injection: power cuts at chosen and random flash writes, bit rot, bus faults, fuzzing | Done |
-| 5 | Fleet view across many emulated devices | Planned |
+| Phase | Scope | State | Where |
+|-------|-------|-------|-------|
+| 1 | Bare-metal skeleton, Renode lab, UART and CAN plumbing, test harness, CI | Done | [docs/PHASE1_NOTES.md](docs/PHASE1_NOTES.md), [tests/test_boot.py](tests/test_boot.py), [tests/test_can.py](tests/test_can.py) |
+| 2 | A/B bootloader, Ed25519 signed images, journaled boot state with rollback, watchdog, safe mode, boot log | Done | [docs/PHASE2_NOTES.md](docs/PHASE2_NOTES.md), [tests/test_ab_boot.py](tests/test_ab_boot.py) |
+| 3 | Chunked firmware delivery over CAN into the inactive slot, resume after reset, anti-rollback | Done | [docs/PHASE3_NOTES.md](docs/PHASE3_NOTES.md), [tests/test_ota_transfer.py](tests/test_ota_transfer.py) |
+| 4 | Fault injection: power cuts at chosen and random flash writes, bit rot, bus faults, fuzzing | Done | [docs/FAULT_MATRIX.md](docs/FAULT_MATRIX.md), [tests/test_faults.py](tests/test_faults.py) |
+| 5 | Fleet of N devices on one bus, staged rollout with halt on failure, rollout timeline | Done | [tools/fleet.py](tools/fleet.py), [tests/test_fleet.py](tests/test_fleet.py), [docs/last_rollout.svg](docs/last_rollout.svg) |
+
+Design rationale for every major choice, including the known gaps, is in
+[docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md). Every injected fault
+and the test that covers it is listed in [docs/FAULT_MATRIX.md](docs/FAULT_MATRIX.md).
 
 ## What runs today
 
@@ -113,10 +118,20 @@ Requirements:
 
 ```bash
 pip install -r tests/requirements.txt
-cmake -S . -B build -G Ninja
-cmake --build build
-pytest -v
+make test
 ```
+
+`make test` configures, builds, and runs every test file (core, fault
+injection, fleet). The last line of a passing run, measured on this
+repository at the commit that introduced the fleet:
+
+```
+50 passed, 1 skipped in 1247.32s (0:20:47)
+```
+
+`make test-core`, `make test-faults` and `make test-fleet` run the three
+groups separately; CI runs them as separate jobs. Under Docker the same
+targets work: `docker run --rm ota-lab make test`.
 
 The build produces the bootloader, the safe-mode image, six signed
 application images (three variants for each slot) and
@@ -173,10 +188,29 @@ python tools/sign_image.py --key keys/dev_ed25519.key --slot B --version 0.3.1 \
     --in build/firmware/app/app_good_B.bin --out my_image_B.bin
 ```
 
-`keys/dev_ed25519.key` is a throwaway test key, committed on purpose so a
-clean clone builds and the tests run. It protects nothing. For anything
-real, generate a new pair with `tools/keygen.py`, keep the private half
-off the repository, and rebuild the bootloader with the new public key.
+`keys/dev_ed25519.key` is a throwaway development key, committed on
+purpose so that a clean clone builds signed images and the tests run
+reproducibly. It protects nothing and must not be used for anything real.
+[keys/README.md](keys/README.md) explains how to replace it with a key kept
+off the repository; the bootloader accepts images from exactly one public
+key, compiled into its own flash sectors, which no image ever writes.
+
+### Fleet
+
+```bash
+python tools/fleet.py resc --nodes 5 --out build/fleet/fleet.resc   # generate the script
+renode build/fleet/fleet.resc                                        # then: start
+python tools/fleet.py status --nodes 5
+python tools/fleet.py rollout --nodes 5 --image build/firmware/app/app_good_B.signed.bin \
+    --stage 20,50,100 --confirm-window 10 --svg docs/last_rollout.svg
+python tools/fleet.py logs --node 3
+```
+
+Each device derives its CAN identifiers from a node id the script writes
+into the STM32 unique-ID area; node n uses 0x710 + 0x10 n and the two ids
+above it, up to 15 nodes. A rollout that halts prints which node failed and
+why, leaves earlier stages on the new version, and touches nothing beyond
+the failed stage.
 
 ## Repository layout
 
@@ -187,7 +221,7 @@ firmware/boot/        A/B bootloader
 firmware/safe/        safe-mode image
 firmware/app/         application, three variants x two slots
 firmware/can_gateway/ CAN to UART bridge used by the tests
-tools/                keygen, signer, flash image builder, journal codec, CAN update sender
+tools/                keygen, signer, flash image builder, journal codec, CAN update sender, fleet tool
 keys/                 development signing key (test only)
 renode/               platform description and lab script
 tests/                pytest suite and the Renode harness
@@ -229,10 +263,30 @@ docs/                 architecture, memory map, phase notes
 | `test_bit_rot_in_*` (4 tests) | slot body, signature, journal record, boot log entry |
 | `test_bus_duplicates_reordering_and_loss` | duplicates, swaps and loss at once |
 | `test_garbage_and_malformed_frames_do_not_break_the_device` | fuzz and malformed control sequences |
+| `test_staged_rollout_happy_path` | five devices, 20/50/100% stages, all confirm, timeline on virtual time |
+| `test_rollout_halts_on_corrupted_device` | one device in safe mode: halt at its stage, earlier stage updated, later untouched |
+| `test_rollout_halts_when_a_device_never_confirms` | one device reverts after three trials, rollout names it |
 
 Timing assertions use the emulator's virtual clock rather than the host
-clock. Three consecutive local runs and both CI jobs report the same
-47 passed, 1 skipped.
+clock. The skipped test is the Renode DLC 0 crash documented in
+[docs/renode_issue.md](docs/renode_issue.md).
+
+## Size
+
+Counted with cloc 2.10 on this tree. Vendored code is Monocypher 4.0.2
+(`firmware/common/monocypher/`), under its own licence; everything else in
+`firmware/` is written for this project.
+
+| Category | Files | Code lines | What |
+|----------|------:|-----------:|------|
+| Firmware, own C and headers | 47 | 2829 | bootloader, safe mode, application, gateway, drivers, journal, update task |
+| Firmware, linker script | 1 | 94 | `stm32f4.ld` |
+| Vendored C (Monocypher) | 4 | 2416 | Ed25519, SHA-512 |
+| Python | 18 | 2527 | host tools and the pytest suite |
+| Config | 11 | 283 | CMake, workflow YAML, Dockerfile, Makefile, pytest.ini |
+| Docs | 10 | 1414 | Markdown under docs/, this file, keys/README.md |
+
+Built image sizes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#flash-layout).
 
 ## Flash layout (short version)
 
