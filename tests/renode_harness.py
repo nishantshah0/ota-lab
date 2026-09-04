@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import queue
+import random
 import re
 import shutil
 import socket
@@ -26,10 +27,30 @@ _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 _TELNET_IAC = 255
 
 
+_handed_out: set[int] = set()
+_port_lock = threading.Lock()
+_PORT_RANGE = (21000, 29999)
+
+
 def free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A TCP port Renode can listen on. Ports come from a private range and
+    are never handed out twice by one process: a port from the OS ephemeral
+    range can still be held by a Renode that is shutting down or by a
+    client socket in TIME_WAIT, and a listener that fails to bind shows up
+    as "port not accepting connections" much later."""
+    with _port_lock:
+        for _ in range(500):
+            port = random.randint(*_PORT_RANGE)
+            if port in _handed_out:
+                continue
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            _handed_out.add(port)
+            return port
+    raise RuntimeError("no free TCP port found")
 
 
 def wait_for_port(port: int, timeout: float) -> socket.socket:
