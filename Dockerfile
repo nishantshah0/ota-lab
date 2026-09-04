@@ -24,7 +24,8 @@ RUN wget -q -O /tmp/renode.tar.gz \
     && rm /tmp/renode.tar.gz
 
 ENV PATH="/opt/renode:${PATH}" \
-    RENODE=/opt/renode/renode
+    RENODE=/opt/renode/renode \
+    PYTHON=python3
 
 WORKDIR /work
 
