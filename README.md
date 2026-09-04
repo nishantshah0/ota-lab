@@ -282,9 +282,9 @@ Counted with cloc 2.10 on this tree. Vendored code is Monocypher 4.0.2
 | Firmware, own C and headers | 47 | 2829 | bootloader, safe mode, application, gateway, drivers, journal, update task |
 | Firmware, linker script | 1 | 94 | `stm32f4.ld` |
 | Vendored C (Monocypher) | 4 | 2416 | Ed25519, SHA-512 |
-| Python | 18 | 2527 | host tools and the pytest suite |
-| Config | 11 | 283 | CMake, workflow YAML, Dockerfile, Makefile, pytest.ini |
-| Docs | 10 | 1414 | Markdown under docs/, this file, keys/README.md |
+| Python | 18 | 2576 | host tools and the pytest suite |
+| Config | 11 | 284 | CMake, workflow YAML, Dockerfile, Makefile, pytest.ini |
+| Docs | 10 | 1457 | Markdown under docs/, this file, keys/README.md |
 
 Built image sizes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#flash-layout).
 
