@@ -61,8 +61,8 @@ static void on_tick(void)
 
 static void on_can_rx(const struct can_frame *rx)
 {
-    if (update_enqueue(rx)) {
-        return; /* update protocol frames are never echoed */
+    if (update_enqueue(rx) || update_is_reserved_id(rx->id, rx->extended)) {
+        return; /* update protocol frames, ours or another node's, are never echoed */
     }
     struct can_frame tx = *rx;
     tx.id = tx.extended ? (tx.id + 1U) & 0x1FFFFFFFU : (tx.id + 1U) & 0x7FFU;
@@ -85,6 +85,9 @@ static void print_banner(bool can_ok)
     fmt_put_udec(h->ver_patch);
     uart_puts(" (phase 3) ===\r\n");
     uart_puts("board: STM32F4 Discovery (Renode)\r\n");
+    uart_puts("node: ");
+    fmt_put_udec(update_node());
+    uart_puts("\r\n");
     uart_puts("slot: ");
     uart_puts(s->running_slot == SLOT_A ? "A" : "B");
     uart_puts(s->is_pending ? " (pending, trial boot)" : s->is_active ? " (active)" : " (fallback)");

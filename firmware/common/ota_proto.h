@@ -2,10 +2,13 @@
  * Firmware delivery protocol over classic CAN (8 byte frames).
  * Mirrored by tools/ota_send.py; keep the two in sync.
  *
- * IDs (11-bit):
- *   0x710  host -> device control: START_A, START_B, FINISH, ABORT, STATUS
- *   0x711  host -> device data:    [seq lo][seq hi][6 payload bytes]
- *   0x712  device -> host replies: ACK, NAK, VERDICT, STATUS
+ * IDs (11-bit), per node n (0..14), stride 0x10 from base 0x710:
+ *   0x710 + 0x10 n  host -> device control: START_A, START_B, FINISH, ABORT,
+ *                   STATUS, INFO, LOG_READ, REBOOT
+ *   0x711 + 0x10 n  host -> device data:    [seq lo][seq hi][6 payload bytes]
+ *   0x712 + 0x10 n  device -> host replies: ACK, NAK, VERDICT, STATUS, INFO, LOG
+ * Node 0 therefore uses 0x710/0x711/0x712. The whole range 0x710..0x7F2 is
+ * reserved: an application must not echo or otherwise use it.
  *
  * A transfer moves the whole signed image file (512 byte header + body) in
  * 6 byte chunks numbered from 0. The device collects a window of 32 chunks
@@ -20,19 +23,41 @@
  *   FINISH   03
  *   ABORT    04
  *   STATUS   05
+ *   INFO     06
+ *   LOG_READ 07 | index u16 LE
+ *   REBOOT   08
  *
  * Replies:
  *   ACK      20 | next seq u16 LE | code | reserved x4
  *              after START: code 0 = fresh transfer, 1 = resumed
  *              during data: window written, next expected seq
+ *              after REBOOT: sent just before the reset
  *   NAK      21 | next seq u16 LE | code | reserved x4
  *              during data: code 1 = gap; after START: rejection code
  *   VERDICT  23 | code | detail u32 LE | reserved x2     (after FINISH)
  *   STATUS   24 | state | slot | next seq u16 LE | total u16 LE | reserved
+ *   INFO     25 | running slot (low nibble) + active slot (high nibble)
+ *              | ver major | minor | patch | boot count u16 LE
+ *              | last boot log reason (0xFF if the log is empty)
+ *   LOG      26 | index u16 LE | slot (0xFF = past the end) | reason
+ *              | attempts | cause | result A (high nibble) + result B (low)
  */
 #ifndef OTA_PROTO_H
 #define OTA_PROTO_H
 
+#include <stdint.h>
+
+#define OTA_ID_BASE_CTRL  0x710U
+#define OTA_NODE_STRIDE   0x10U
+#define OTA_MAX_NODE      14U
+#define OTA_ID_RANGE_LO   OTA_ID_BASE_CTRL
+#define OTA_ID_RANGE_HI   (OTA_ID_BASE_CTRL + OTA_MAX_NODE * OTA_NODE_STRIDE + 2U)
+
+static inline uint32_t ota_id_ctrl(uint8_t node)  { return OTA_ID_BASE_CTRL + (uint32_t)node * OTA_NODE_STRIDE; }
+static inline uint32_t ota_id_data(uint8_t node)  { return ota_id_ctrl(node) + 1U; }
+static inline uint32_t ota_id_reply(uint8_t node) { return ota_id_ctrl(node) + 2U; }
+
+/* Node 0 identifiers, kept for readers of older documentation. */
 #define OTA_ID_CTRL   0x710U
 #define OTA_ID_DATA   0x711U
 #define OTA_ID_REPLY  0x712U
@@ -42,11 +67,14 @@
 #define OTA_WINDOW_BYTES  (OTA_CHUNK_BYTES * OTA_WINDOW_CHUNKS)
 
 enum ota_ctrl_type {
-    OTA_CTRL_START_A = 0x01,
-    OTA_CTRL_START_B = 0x02,
-    OTA_CTRL_FINISH  = 0x03,
-    OTA_CTRL_ABORT   = 0x04,
-    OTA_CTRL_STATUS  = 0x05,
+    OTA_CTRL_START_A  = 0x01,
+    OTA_CTRL_START_B  = 0x02,
+    OTA_CTRL_FINISH   = 0x03,
+    OTA_CTRL_ABORT    = 0x04,
+    OTA_CTRL_STATUS   = 0x05,
+    OTA_CTRL_INFO     = 0x06,
+    OTA_CTRL_LOG_READ = 0x07,
+    OTA_CTRL_REBOOT   = 0x08,
 };
 
 enum ota_reply_type {
@@ -54,6 +82,8 @@ enum ota_reply_type {
     OTA_REPLY_NAK     = 0x21,
     OTA_REPLY_VERDICT = 0x23,
     OTA_REPLY_STATUS  = 0x24,
+    OTA_REPLY_INFO    = 0x25,
+    OTA_REPLY_LOG     = 0x26,
 };
 
 #define OTA_START_FLAG_FORCE 0x01U

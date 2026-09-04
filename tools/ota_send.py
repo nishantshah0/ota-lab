@@ -36,10 +36,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import otaimg  # noqa: E402
 
-ID_CTRL, ID_DATA, ID_REPLY = 0x710, 0x711, 0x712
+ID_CTRL, ID_DATA, ID_REPLY = 0x710, 0x711, 0x712   # node 0
+NODE_STRIDE, MAX_NODE = 0x10, 14
 CHUNK, WINDOW = 6, 32
-START_A, START_B, FINISH, ABORT, STATUS = 1, 2, 3, 4, 5
-ACK, NAK, VERDICT, STATUS_REPLY = 0x20, 0x21, 0x23, 0x24
+START_A, START_B, FINISH, ABORT, STATUS, INFO, LOG_READ, REBOOT = 1, 2, 3, 4, 5, 6, 7, 8
+ACK, NAK, VERDICT, STATUS_REPLY, INFO_REPLY, LOG_REPLY = 0x20, 0x21, 0x23, 0x24, 0x25, 0x26
+REASONS = {0: "ACTIVE", 1: "PENDING_TRIAL", 2: "FALLBACK", 3: "ROLLBACK", 4: "SAFE_MODE", 0xFF: "none"}
+CAUSES = {0: "POWER_ON", 1: "RESET_WHILE_RUNNING", 2: "APP_REQUEST"}
+RESULTS = {0: "OK", 1: "BAD_MAGIC", 2: "BAD_HEADER", 3: "BAD_SIZE", 4: "WRONG_SLOT", 5: "BAD_CRC", 6: "BAD_SIGNATURE", 7: "BAD_VECTORS"}
+SLOTS = {0: "A", 1: "B", 2: "SAFE", 0xFF: "none"}
+
+
+def node_ids(node: int) -> tuple[int, int, int]:
+    """(control, data, reply) identifiers of a node."""
+    if not 0 <= node <= MAX_NODE:
+        raise ValueError(f"node must be 0..{MAX_NODE}")
+    ctrl = ID_CTRL + NODE_STRIDE * node
+    return ctrl, ctrl + 1, ctrl + 2
 FLAG_FORCE = 0x01
 
 CODES = {
@@ -120,8 +133,10 @@ class Sender:
     def __init__(self, io: LineIO, *, verbose: bool = True, ack_timeout: float = 5.0,
                  max_retries: int = 10, drop_rate: float = 0.0, seed: int = 0,
                  corrupt_chunk: int | None = None, dup_rate: float = 0.0,
-                 reorder_rate: float = 0.0):
+                 reorder_rate: float = 0.0, node: int = 0):
         self.io = io
+        self.node = node
+        self.id_ctrl, self.id_data, self.id_reply = node_ids(node)
         self.verbose = verbose
         self.ack_timeout = ack_timeout
         self.max_retries = max_retries
@@ -165,7 +180,7 @@ class Sender:
                 continue
             if line == "ERR":
                 raise TransferError("gateway rejected a frame")
-            if line.startswith("t") and len(line) >= 5 and int(line[1:4], 16) == ID_REPLY:
+            if line.startswith("t") and len(line) >= 5 and int(line[1:4], 16) == self.id_reply:
                 data = bytes.fromhex(line[5:])
                 if not data:
                     continue
@@ -182,6 +197,69 @@ class Sender:
                     r.detail = int.from_bytes(data[5:7], "little")
                 return r
 
+    # --- fleet queries ------------------------------------------------
+
+    def info(self, timeout: float | None = None) -> dict | None:
+        """INFO: running/active slot, version, boot count, last boot reason."""
+        self.send_frame(self.id_ctrl, bytes([INFO]))
+        deadline = time.monotonic() + (timeout or self.ack_timeout)
+        while True:
+            r = self.recv_reply(max(0.0, deadline - time.monotonic()))
+            if r is None:
+                return None
+            if r.type != INFO_REPLY:
+                continue
+            d = r.raw
+            return {
+                "node": self.node,
+                "running": SLOTS.get(d[1] & 0xF, str(d[1] & 0xF)),
+                "active": SLOTS.get(d[1] >> 4, str(d[1] >> 4)),
+                "version": f"{d[2]}.{d[3]}.{d[4]}",
+                "version_tuple": (d[2], d[3], d[4]),
+                "boot_count": int.from_bytes(d[5:7], "little"),
+                "last_reason": REASONS.get(d[7], str(d[7])),
+            }
+
+    def read_log(self, timeout: float | None = None) -> list[dict]:
+        """Every boot log entry, oldest first."""
+        entries: list[dict] = []
+        idx = 0
+        while True:
+            self.send_frame(self.id_ctrl, bytes([LOG_READ]) + idx.to_bytes(2, "little"))
+            deadline = time.monotonic() + (timeout or self.ack_timeout)
+            r = None
+            while True:
+                r = self.recv_reply(max(0.0, deadline - time.monotonic()))
+                if r is None or (r.type == LOG_REPLY and int.from_bytes(r.raw[1:3], "little") == idx):
+                    break
+            if r is None:
+                raise TransferError(f"no LOG reply for index {idx}")
+            d = r.raw
+            if d[3] == 0xFF:
+                return entries
+            if d[3] == 0xFE:
+                entries.append({"index": idx, "torn": True})
+            else:
+                entries.append({
+                    "index": idx, "torn": False,
+                    "slot": SLOTS.get(d[3], str(d[3])), "reason": REASONS.get(d[4], str(d[4])),
+                    "attempts": d[5], "cause": CAUSES.get(d[6], str(d[6])),
+                    "result_a": RESULTS.get(d[7] >> 4, str(d[7] >> 4)),
+                    "result_b": RESULTS.get(d[7] & 0xF, str(d[7] & 0xF)),
+                })
+            idx += 1
+
+    def reboot(self, timeout: float | None = None) -> bool:
+        """Ask the device to reset through the bootloader. True if it acknowledged."""
+        self.send_frame(self.id_ctrl, bytes([REBOOT]))
+        deadline = time.monotonic() + (timeout or self.ack_timeout)
+        while True:
+            r = self.recv_reply(max(0.0, deadline - time.monotonic()))
+            if r is None:
+                return False
+            if r.type == ACK:
+                return True
+
     # --- protocol -----------------------------------------------------
 
     def start(self, image: bytes, slot: int, force: bool) -> Reply:
@@ -190,8 +268,8 @@ class Sender:
         size = len(image)
         a = bytes([START_A]) + size.to_bytes(4, "little") + bytes(h.version)
         b = bytes([START_B, FLAG_FORCE if force else 0, slot]) + header_crc.to_bytes(4, "little") + b"\xff"
-        self.send_frame(ID_CTRL, a)
-        self.send_frame(ID_CTRL, b)
+        self.send_frame(self.id_ctrl, a)
+        self.send_frame(self.id_ctrl, b)
         r = self.recv_reply(self.ack_timeout)
         if r is None:
             raise TransferError("no reply to START")
@@ -221,18 +299,18 @@ class Sender:
             frame = self.data_frame(image, seq)
             if pending_swap is not None:
                 # Reordering: the previous frame goes out after this one.
-                self.send_frame(ID_DATA, frame)
-                self.send_frame(ID_DATA, pending_swap)
+                self.send_frame(self.id_data, frame)
+                self.send_frame(self.id_data, pending_swap)
                 pending_swap = None
                 continue
             if self.reorder_rate and self.rng.random() < self.reorder_rate:
                 pending_swap = frame
                 continue
-            self.send_frame(ID_DATA, frame)
+            self.send_frame(self.id_data, frame)
             if self.dup_rate and self.rng.random() < self.dup_rate:
-                self.send_frame(ID_DATA, frame)
+                self.send_frame(self.id_data, frame)
         if pending_swap is not None:
-            self.send_frame(ID_DATA, pending_swap)
+            self.send_frame(self.id_data, pending_swap)
         if self.verbose and (dropped_here or base % WINDOW):
             self._say(f"  sent {base}..{end - 1}, dropped {dropped_here}")
         return end
@@ -304,7 +382,7 @@ class Sender:
             if self.verbose and base % (WINDOW * 8) == 0:
                 self._say(f"  {base}/{total} chunks ({100 * base // total}%)")
 
-        self.send_frame(ID_CTRL, bytes([FINISH]))
+        self.send_frame(self.id_ctrl, bytes([FINISH]))
         r = self.recv_reply(max(self.ack_timeout, 10.0))
         if r is None or r.type != VERDICT:
             raise TransferError(f"no verdict after FINISH: {r}")
@@ -329,6 +407,7 @@ def main() -> int:
     ap.add_argument("--dup-rate", type=float, default=0.0, help="probability of sending a DATA frame twice")
     ap.add_argument("--reorder-rate", type=float, default=0.0, help="probability of swapping a DATA frame with the next")
     ap.add_argument("--stop-after", type=int)
+    ap.add_argument("--node", type=int, default=0, help="target node id, 0..14")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -337,7 +416,7 @@ def main() -> int:
     io = SocketLineIO(args.host, args.port)
     sender = Sender(io, verbose=not args.quiet, drop_rate=args.drop_rate, seed=args.seed,
                     corrupt_chunk=args.corrupt_chunk, dup_rate=args.dup_rate,
-                    reorder_rate=args.reorder_rate)
+                    reorder_rate=args.reorder_rate, node=args.node)
     result = sender.transfer(image, slot, force=args.force, stop_after=args.stop_after)
     io.close()
     return 0 if result.accepted else 1

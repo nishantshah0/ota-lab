@@ -1,0 +1,36 @@
+name: Toolchain, Renode and Python
+description: Installs gcc-arm-none-eabi, CMake, Ninja, the Renode portable build (cached) and the Python requirements.
+runs:
+  using: composite
+  steps:
+    - name: Install ARM toolchain and CMake
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi cmake ninja-build make
+        arm-none-eabi-gcc --version | head -n 1
+    - name: Cache Renode
+      id: cache-renode
+      uses: actions/cache@v4
+      with:
+        path: ~/renode
+        key: renode-portable-${{ env.RENODE_VERSION }}
+    - name: Install Renode (portable)
+      if: steps.cache-renode.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        url="https://github.com/renode/renode/releases/download/v${RENODE_VERSION}/renode-${RENODE_VERSION}.linux-portable.tar.gz"
+        mkdir -p ~/renode
+        wget -q -O /tmp/renode.tar.gz "$url"
+        tar -xzf /tmp/renode.tar.gz --strip-components=1 -C ~/renode
+    - name: Add Renode to PATH
+      shell: bash
+      run: |
+        echo "$HOME/renode" >> "$GITHUB_PATH"
+        "$HOME/renode/renode" --version
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Install Python dependencies
+      shell: bash
+      run: pip install -r tests/requirements.txt

@@ -72,6 +72,7 @@ add_library(common STATIC
     ${COMMON_DIR}/update.c
     ${COMMON_DIR}/sysreset.c
     ${COMMON_DIR}/public_key.c
+    ${COMMON_DIR}/node.c
 )
 target_include_directories(common PUBLIC ${COMMON_DIR})
 target_link_libraries(common PUBLIC monocypher)

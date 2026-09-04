@@ -22,4 +22,9 @@ void update_tick_10ms(void);
 /* Console helper: prints "UPDATE state=.. slot=.. next=.. total=.." */
 void update_print_status(void);
 
+/* This node's id (see node.h) and whether a CAN id belongs to the
+ * protocol range reserved for any node, which applications must not echo. */
+uint8_t update_node(void);
+bool update_is_reserved_id(uint32_t id, bool extended);
+
 #endif

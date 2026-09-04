@@ -9,6 +9,9 @@
 #include "uart.h"
 #include "fmt.h"
 #include "stm32f4_regs.h"
+#include "bootlog.h"
+#include "node.h"
+#include "sysreset.h"
 
 #define QUEUE_LEN        64U   /* power of two, frames buffered between ISR and main loop */
 /* Only frees the RAM state of an abandoned transfer; a new START works in
@@ -24,6 +27,8 @@ static uint32_t dbg_last_seq, dbg_dups, dbg_naks, dbg_accepted;
 static volatile bool timed_out;
 
 static struct {
+    uint32_t id_ctrl, id_data, id_reply;   /* this node's identifiers */
+    uint8_t  node;
     uint8_t  state;
     uint8_t  running_slot;
     uint8_t  slot;            /* target */
@@ -66,7 +71,7 @@ static const char *code_str(uint8_t code)
 
 static void reply(uint8_t type, uint16_t seq, uint8_t code, uint32_t detail)
 {
-    struct can_frame f = { .id = OTA_ID_REPLY, .extended = false, .remote = false, .dlc = 8 };
+    struct can_frame f = { .id = ctx.id_reply, .extended = false, .remote = false, .dlc = 8 };
     f.data[0] = type;
     if (type == OTA_REPLY_VERDICT) {
         f.data[1] = code;
@@ -100,6 +105,10 @@ void update_init(uint8_t running_slot)
     ctx.state = OTA_STATE_IDLE;
     ctx.running_slot = running_slot;
     ctx.have_start_a = false;
+    ctx.node = node_id();
+    ctx.id_ctrl  = ota_id_ctrl(ctx.node);
+    ctx.id_data  = ota_id_data(ctx.node);
+    ctx.id_reply = ota_id_reply(ctx.node);
     q_head = q_tail = 0;
 
     struct progress p;
@@ -114,7 +123,7 @@ void update_init(uint8_t running_slot)
 
 bool update_enqueue(const struct can_frame *f)
 {
-    if (f->extended || (f->id != OTA_ID_CTRL && f->id != OTA_ID_DATA)) {
+    if (f->extended || (f->id != ctx.id_ctrl && f->id != ctx.id_data)) {
         return false;
     }
     rx_frames++;
@@ -365,9 +374,71 @@ static void handle_abort(void)
     reply(OTA_REPLY_ACK, ctx.next_seq, 0, 0);
 }
 
+uint8_t update_node(void)
+{
+    return ctx.node;
+}
+
+bool update_is_reserved_id(uint32_t id, bool extended)
+{
+    return !extended && id >= OTA_ID_RANGE_LO && id <= OTA_ID_RANGE_HI;
+}
+
+static void send_info(void)
+{
+    struct boot_state s;
+    journal_read(&s);
+    uint32_t ver = 0;
+    if (ctx.running_slot == SLOT_A || ctx.running_slot == SLOT_B) {
+        ver = image_version_packed(image_self_header());
+    }
+    unsigned count = bootlog_count();
+    uint8_t last_reason = 0xFFU;
+    struct bootlog_entry e;
+    for (unsigned i = count; i > 0U; i--) {
+        if (bootlog_get(i - 1U, &e)) {
+            last_reason = e.reason;
+            break;
+        }
+    }
+    struct can_frame f = { .id = ctx.id_reply, .extended = false, .remote = false, .dlc = 8 };
+    f.data[0] = OTA_REPLY_INFO;
+    f.data[1] = (uint8_t)((ctx.running_slot & 0xFU) | ((s.active & 0xFU) << 4));
+    f.data[2] = (uint8_t)(ver >> 16);
+    f.data[3] = (uint8_t)(ver >> 8);
+    f.data[4] = (uint8_t)ver;
+    f.data[5] = (uint8_t)count;
+    f.data[6] = (uint8_t)(count >> 8);
+    f.data[7] = last_reason;
+    (void)can_send(&f);
+}
+
+static void send_log_entry(uint16_t idx)
+{
+    struct can_frame f = { .id = ctx.id_reply, .extended = false, .remote = false, .dlc = 8 };
+    struct bootlog_entry e;
+    f.data[0] = OTA_REPLY_LOG;
+    f.data[1] = (uint8_t)idx;
+    f.data[2] = (uint8_t)(idx >> 8);
+    if (idx >= bootlog_count()) {
+        f.data[3] = 0xFFU;                 /* past the end */
+        f.data[4] = f.data[5] = f.data[6] = f.data[7] = 0xFFU;
+    } else if (!bootlog_get(idx, &e)) {
+        f.data[3] = 0xFEU;                 /* torn entry */
+        f.data[4] = f.data[5] = f.data[6] = f.data[7] = 0xFFU;
+    } else {
+        f.data[3] = e.slot;
+        f.data[4] = e.reason;
+        f.data[5] = e.attempts;
+        f.data[6] = e.cause;
+        f.data[7] = (uint8_t)((e.result_a << 4) | (e.result_b & 0xFU));
+    }
+    (void)can_send(&f);
+}
+
 static void send_status(void)
 {
-    struct can_frame f = { .id = OTA_ID_REPLY, .extended = false, .remote = false, .dlc = 8 };
+    struct can_frame f = { .id = ctx.id_reply, .extended = false, .remote = false, .dlc = 8 };
     f.data[0] = OTA_REPLY_STATUS;
     f.data[1] = ctx.state;
     f.data[2] = ctx.slot;
@@ -381,7 +452,7 @@ static void send_status(void)
 
 static void handle_frame(const struct can_frame *f)
 {
-    if (f->id == OTA_ID_DATA) {
+    if (f->id == ctx.id_data) {
         if (f->dlc >= 2U) {
             handle_data(f);
         }
@@ -396,6 +467,17 @@ static void handle_frame(const struct can_frame *f)
     case OTA_CTRL_FINISH:  handle_finish(); break;
     case OTA_CTRL_ABORT:   handle_abort(); break;
     case OTA_CTRL_STATUS:  send_status(); break;
+    case OTA_CTRL_INFO:    send_info(); break;
+    case OTA_CTRL_LOG_READ:
+        if (f->dlc >= 3U) {
+            send_log_entry((uint16_t)(f->data[1] | (f->data[2] << 8)));
+        }
+        break;
+    case OTA_CTRL_REBOOT:
+        log_line("REBOOT requested over CAN", OTA_OK, 0);
+        reply(OTA_REPLY_ACK, 0, 0, 0);
+        system_reset();
+        break;
     default: break;
     }
 }
