@@ -85,11 +85,16 @@ class FleetLab:
             self.dut_uarts[n].expect(r"^(boot: ok|waiting for update)$", timeout)
 
     def virtual_time_s(self) -> float:
-        out = self.monitor.command("machine ElapsedVirtualTime")
         import re
-        m = re.search(r"Elapsed Virtual Time: (\d+):(\d+):(\d+)\.(\d+)", out)
-        h, mi, s, frac = m.groups()
-        return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+        # A stale prompt left in the monitor buffer can end a read early;
+        # the next read then carries the answer, so retry a few times.
+        for _ in range(4):
+            out = self.monitor.command("machine ElapsedVirtualTime")
+            m = re.search(r"Elapsed Virtual Time: (\d+):(\d+):(\d+)\.(\d+)", out)
+            if m:
+                h, mi, s, frac = m.groups()
+                return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+        raise RuntimeError(f"could not read virtual time from the monitor: {out!r}")
 
     def stop(self) -> None:
         if self.fleet:

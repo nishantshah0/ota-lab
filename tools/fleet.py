@@ -134,6 +134,14 @@ class MonitorClient:
 
     def command(self, cmd: str, timeout: float = 10.0) -> str:
         with self.lock:
+            # Discard log lines and the prompt Renode reprints after them.
+            self.sock.settimeout(0.05)
+            try:
+                while self.sock.recv(4096):
+                    pass
+            except (socket.timeout, OSError):
+                pass
+            self.sock.settimeout(0.5)
             self.sock.sendall(cmd.encode() + b"\n")
             buf = b""
             deadline = time.monotonic() + timeout
@@ -145,9 +153,15 @@ class MonitorClient:
                 if chunk:
                     buf += bytes(b for b in chunk if b != 255)  # crude IAC strip
                 text = self._ANSI.sub(b"", buf).decode("utf-8", "replace")
-                m = self._PROMPT.search(text)
+                start = 0
+                if cmd:
+                    idx = text.find(cmd)
+                    if idx < 0:
+                        continue
+                    start = idx + len(cmd)
+                m = self._PROMPT.search(text, start)
                 if m:
-                    return text[: m.start()]
+                    return text[start: m.start()]
             return buf.decode("utf-8", "replace")
 
     def virtual_time(self, machine: str = "dut0") -> float:

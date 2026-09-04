@@ -150,8 +150,24 @@ class Monitor:
         self._buf = b""
         self.last_prompt = ""
 
-    def _read_until_prompt(self, timeout: float) -> str:
-        """Return everything received up to (excluding) the next prompt."""
+    def _drain(self) -> None:
+        """Discard anything the monitor sent since the last command: log
+        lines and the prompt Renode reprints after each of them."""
+        self.sock.settimeout(0.05)
+        try:
+            while True:
+                if not self.sock.recv(4096):
+                    break
+        except (socket.timeout, OSError):
+            pass
+        finally:
+            self.sock.settimeout(0.5)
+        self._buf = b""
+
+    def _read_until_prompt(self, timeout: float, after: str = "") -> str:
+        """Return the text between the echo of ``after`` (if given) and the
+        first prompt following it. A prompt before the echo belongs to a
+        reprint after a log line and does not count."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -163,11 +179,17 @@ class Monitor:
             if chunk:
                 self._buf += _strip_telnet(chunk)
             text = _ANSI_RE.sub(b"", self._buf).decode("utf-8", "replace")
-            m = self._PROMPT_RE.search(text)
+            start = 0
+            if after:
+                idx = text.find(after)
+                if idx < 0:
+                    continue
+                start = idx + len(after)
+            m = self._PROMPT_RE.search(text, start)
             if m:
                 self._buf = b""
                 self.last_prompt = m.group(1)
-                return text[: m.start()]
+                return text[start: m.start()]
         text = _ANSI_RE.sub(b"", self._buf).decode("utf-8", "replace")
         self._buf = b""
         return text
@@ -178,8 +200,9 @@ class Monitor:
         self._read_until_prompt(timeout)
 
     def command(self, cmd: str, timeout: float = 30.0) -> str:
+        self._drain()
         self.sock.sendall(cmd.encode() + b"\n")
-        return self._read_until_prompt(timeout)
+        return self._read_until_prompt(timeout, after=cmd)
 
     def close(self) -> None:
         try:
@@ -305,12 +328,13 @@ class RenodeLab:
     def virtual_time_s(self, machine: str = "dut") -> float:
         """Elapsed virtual time of a machine, in seconds, as reported by Renode."""
         self.monitor.command(f'mach set "{machine}"')
-        out = self.monitor.command("machine ElapsedVirtualTime")
-        m = re.search(r"Elapsed Virtual Time: (\d+):(\d+):(\d+)\.(\d+)", out)
-        if not m:
-            raise RuntimeError(f"could not parse virtual time from: {out!r}")
-        h, mi, s, frac = m.groups()
-        return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+        for _ in range(4):   # a stale prompt in the buffer can end a read early
+            out = self.monitor.command("machine ElapsedVirtualTime")
+            m = re.search(r"Elapsed Virtual Time: (\d+):(\d+):(\d+)\.(\d+)", out)
+            if m:
+                h, mi, s, frac = m.groups()
+                return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+        raise RuntimeError(f"could not parse virtual time from: {out!r}")
 
     def dump_flash(self, path: Path, addr: int = 0x08000000, size: int = 0x80000) -> bytes:
         """Copy a flash region out of the running emulation into a file."""
