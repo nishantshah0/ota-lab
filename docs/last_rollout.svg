@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12">
+<rect width="900" height="260" fill="#ffffff"/>
+<text x="70" y="22" font-size="15" font-weight="bold">Rollout of 0.3.1: complete (5 nodes, 3 stages)</text>
+<text x="70" y="40" fill="#555">x axis: Renode virtual seconds</text>
+<line x1="70.0" y1="52" x2="70.0" y2="190" stroke="#bbb" stroke-dasharray="4 3"/>
+<text x="73.0" y="48" fill="#777">stage 1</text>
+<line x1="332.4" y1="52" x2="332.4" y2="190" stroke="#bbb" stroke-dasharray="4 3"/>
+<text x="335.4" y="48" fill="#777">stage 2</text>
+<line x1="595.9" y1="52" x2="595.9" y2="190" stroke="#bbb" stroke-dasharray="4 3"/>
+<text x="598.9" y="48" fill="#777">stage 3</text>
+<text x="62" y="76.9" text-anchor="end">node 0</text>
+<line x1="70" y1="86" x2="880" y2="86" stroke="#eee"/>
+<rect x="70.8" y="65" width="130.1" height="16" fill="#4a90d9" rx="2"><title>node 0 transfer 0.15..3.16 21916 B, 0 NAK</title></rect>
+<rect x="201.3" y="65" width="130.0" height="16" fill="#9aa5b1" rx="2"><title>node 0 boot 3.17..6.18 running B</title></rect>
+<rect x="331.2" y="65" width="3.0" height="16" fill="#2e8b57" rx="2"><title>node 0 confirm 6.18..6.18 0.3.1</title></rect>
+<text x="62" y="102.9" text-anchor="end">node 1</text>
+<line x1="70" y1="112" x2="880" y2="112" stroke="#eee"/>
+<rect x="333.6" y="91" width="128.6" height="16" fill="#4a90d9" rx="2"><title>node 1 transfer 6.23..9.21 21916 B, 0 NAK</title></rect>
+<rect x="462.3" y="91" width="131.5" height="16" fill="#9aa5b1" rx="2"><title>node 1 boot 9.21..12.26 running B</title></rect>
+<rect x="593.9" y="91" width="3.0" height="16" fill="#2e8b57" rx="2"><title>node 1 confirm 12.26..12.26 0.3.1</title></rect>
+<text x="62" y="128.9" text-anchor="end">node 2</text>
+<line x1="70" y1="138" x2="880" y2="138" stroke="#eee"/>
+<rect x="333.8" y="117" width="128.8" height="16" fill="#4a90d9" rx="2"><title>node 2 transfer 6.24..9.22 21916 B, 0 NAK</title></rect>
+<rect x="462.8" y="117" width="132.1" height="16" fill="#9aa5b1" rx="2"><title>node 2 boot 9.22..12.28 running B</title></rect>
+<rect x="595.0" y="117" width="3.0" height="16" fill="#2e8b57" rx="2"><title>node 2 confirm 12.28..12.28 0.3.1</title></rect>
+<text x="62" y="154.9" text-anchor="end">node 3</text>
+<line x1="70" y1="164" x2="880" y2="164" stroke="#eee"/>
+<rect x="596.9" y="143" width="129.0" height="16" fill="#4a90d9" rx="2"><title>node 3 transfer 12.33..15.31 21916 B, 0 NAK</title></rect>
+<rect x="726.2" y="143" width="152.9" height="16" fill="#9aa5b1" rx="2"><title>node 3 boot 15.32..18.86 running B</title></rect>
+<rect x="879.2" y="143" width="3.0" height="16" fill="#2e8b57" rx="2"><title>node 3 confirm 18.86..18.86 0.3.1</title></rect>
+<text x="62" y="180.9" text-anchor="end">node 4</text>
+<line x1="70" y1="190" x2="880" y2="190" stroke="#eee"/>
+<rect x="596.9" y="169" width="129.5" height="16" fill="#4a90d9" rx="2"><title>node 4 transfer 12.33..15.32 21916 B, 0 NAK</title></rect>
+<rect x="726.4" y="169" width="152.4" height="16" fill="#9aa5b1" rx="2"><title>node 4 boot 15.32..18.85 running B</title></rect>
+<rect x="878.8" y="169" width="3.0" height="16" fill="#2e8b57" rx="2"><title>node 4 confirm 18.85..18.85 0.3.1</title></rect>
+<line x1="70.0" y1="198" x2="70.0" y2="203" stroke="#333"/>
+<text x="70.0" y="216" text-anchor="middle">0.1</text>
+<line x1="205.0" y1="198" x2="205.0" y2="203" stroke="#333"/>
+<text x="205.0" y="216" text-anchor="middle">3.3</text>
+<line x1="340.0" y1="198" x2="340.0" y2="203" stroke="#333"/>
+<text x="340.0" y="216" text-anchor="middle">6.4</text>
+<line x1="475.0" y1="198" x2="475.0" y2="203" stroke="#333"/>
+<text x="475.0" y="216" text-anchor="middle">9.5</text>
+<line x1="610.0" y1="198" x2="610.0" y2="203" stroke="#333"/>
+<text x="610.0" y="216" text-anchor="middle">12.6</text>
+<line x1="745.0" y1="198" x2="745.0" y2="203" stroke="#333"/>
+<text x="745.0" y="216" text-anchor="middle">15.8</text>
+<line x1="880.0" y1="198" x2="880.0" y2="203" stroke="#333"/>
+<text x="880.0" y="216" text-anchor="middle">18.9</text>
+<rect x="70" y="228" width="14" height="12" fill="#4a90d9" rx="2"/>
+<text x="88" y="238">transfer</text>
+<rect x="160" y="228" width="14" height="12" fill="#9aa5b1" rx="2"/>
+<text x="178" y="238">boot</text>
+<rect x="250" y="228" width="14" height="12" fill="#2e8b57" rx="2"/>
+<text x="268" y="238">confirm</text>
+<rect x="340" y="228" width="14" height="12" fill="#c0392b" rx="2"/>
+<text x="358" y="238">revert</text>
+<rect x="430" y="228" width="14" height="12" fill="#e67e22" rx="2"/>
+<text x="448" y="238">fail</text>
+</svg>

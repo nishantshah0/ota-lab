@@ -70,6 +70,14 @@ read the device's boot history. It is register-level C with its own startup
 file and linker script: no HAL, no libc. Monocypher (vendored) provides
 Ed25519 and SHA-512 in the bootloader.
 
+Several devices can share the bus: `tools/fleet.py` drives a staged
+rollout (20%, 50%, 100% by default), waits for each device to boot and
+confirm, halts on the first failure, and draws the result on Renode's
+virtual clock. The image below is the one produced by
+`tests/test_fleet.py::test_staged_rollout_happy_path`.
+
+![Rollout timeline](docs/last_rollout.svg)
+
 A second emulated STM32 (`firmware/can_gateway`) sits on the same CAN bus
 and bridges it to a UART with an SLCAN-style line protocol, so the host can
 put frames on the bus and watch what comes back through a plain socket.
